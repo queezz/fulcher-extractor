@@ -1,3 +1,464 @@
-# Fulcher-alpha transition metadata will be added after checking the manual
-# fitting notebooks and preferred wavelength references.
+schema_version = 1
+description = "Fulcher-alpha transition metadata. H2 Q-branch wavelengths are from the early manual extraction reference table."
 
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 0
+v_lower = 0
+band = "0-0"
+N = 1
+wavelength_nm = 601.8299
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 0
+v_lower = 0
+band = "0-0"
+N = 2
+wavelength_nm = 602.3757
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 0
+v_lower = 0
+band = "0-0"
+N = 3
+wavelength_nm = 603.1909
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 0
+v_lower = 0
+band = "0-0"
+N = 4
+wavelength_nm = 604.2716
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 0
+v_lower = 0
+band = "0-0"
+N = 5
+wavelength_nm = 605.6091
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 0
+v_lower = 0
+band = "0-0"
+N = 6
+wavelength_nm = 607.1996
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 0
+v_lower = 0
+band = "0-0"
+N = 7
+wavelength_nm = 609.0374
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 0
+v_lower = 0
+band = "0-0"
+N = 8
+wavelength_nm = 611.1088
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 0
+v_lower = 0
+band = "0-0"
+N = 9
+wavelength_nm = 613.4077
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 0
+v_lower = 0
+band = "0-0"
+N = 10
+wavelength_nm = 615.9269
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 0
+v_lower = 0
+band = "0-0"
+N = 11
+wavelength_nm = 618.6530
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 1
+v_lower = 1
+band = "1-1"
+N = 1
+wavelength_nm = 612.1787
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 1
+v_lower = 1
+band = "1-1"
+N = 2
+wavelength_nm = 612.7246
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 1
+v_lower = 1
+band = "1-1"
+N = 3
+wavelength_nm = 613.5395
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 1
+v_lower = 1
+band = "1-1"
+N = 4
+wavelength_nm = 614.6186
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 1
+v_lower = 1
+band = "1-1"
+N = 5
+wavelength_nm = 615.9565
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 1
+v_lower = 1
+band = "1-1"
+N = 6
+wavelength_nm = 617.5462
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 1
+v_lower = 1
+band = "1-1"
+N = 7
+wavelength_nm = 619.3812
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 1
+v_lower = 1
+band = "1-1"
+N = 8
+wavelength_nm = 621.4507
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 1
+v_lower = 1
+band = "1-1"
+N = 9
+wavelength_nm = 623.7457
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 1
+v_lower = 1
+band = "1-1"
+N = 10
+wavelength_nm = 626.2495
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 1
+v_lower = 1
+band = "1-1"
+N = 11
+wavelength_nm = 628.9709
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 2
+v_lower = 2
+band = "2-2"
+N = 1
+wavelength_nm = 622.4815
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 3
+v_lower = 3
+band = "3-3"
+N = 1
+wavelength_nm = 632.7060
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 3
+v_lower = 3
+band = "3-3"
+N = 2
+wavelength_nm = 633.2482
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 3
+v_lower = 3
+band = "3-3"
+N = 3
+wavelength_nm = 634.0575
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 3
+v_lower = 3
+band = "3-3"
+N = 4
+wavelength_nm = 635.1282
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 3
+v_lower = 3
+band = "3-3"
+N = 5
+wavelength_nm = 636.4618
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 3
+v_lower = 3
+band = "3-3"
+N = 6
+wavelength_nm = 638.0317
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 3
+v_lower = 3
+band = "3-3"
+N = 7
+wavelength_nm = 639.8452
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 3
+v_lower = 3
+band = "3-3"
+N = 8
+wavelength_nm = 641.8908
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 3
+v_lower = 3
+band = "3-3"
+N = 9
+wavelength_nm = 644.1498
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 2
+v_lower = 2
+band = "2-2"
+N = 2
+wavelength_nm = 623.0258
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 2
+v_lower = 2
+band = "2-2"
+N = 3
+wavelength_nm = 623.8391
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 2
+v_lower = 2
+band = "2-2"
+N = 4
+wavelength_nm = 624.9150
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 2
+v_lower = 2
+band = "2-2"
+N = 5
+wavelength_nm = 626.2495
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 2
+v_lower = 2
+band = "2-2"
+N = 6
+wavelength_nm = 627.8369
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 2
+v_lower = 2
+band = "2-2"
+N = 7
+wavelength_nm = 629.6622
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 2
+v_lower = 2
+band = "2-2"
+N = 8
+wavelength_nm = 631.7233
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 2
+v_lower = 2
+band = "2-2"
+N = 9
+wavelength_nm = 634.0085
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 2
+v_lower = 2
+band = "2-2"
+N = 10
+wavelength_nm = 636.5051
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"
+
+[[lines]]
+isotopologue = "H2"
+branch = "Q"
+v_upper = 2
+v_lower = 2
+band = "2-2"
+N = 11
+wavelength_nm = 639.1882
+source_table = "early-fulcher-manual-extraction/reference/fulcher-alpha-H2.csv"
+original_unit = "nm"

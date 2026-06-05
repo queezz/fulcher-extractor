@@ -1,2 +1,5 @@
-# Blend group definitions will be added alongside the first extraction model.
+schema_version = 1
 
+# Explicit blend handling is intentionally deferred until single-line behavior
+# is inspected against current SpectroCube data and archaeology examples.
+groups = []
