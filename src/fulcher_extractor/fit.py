@@ -16,6 +16,7 @@ from .spectrocube_io import Spectrum
 class FitConfig:
     line_half_width_nm: float = 0.18
     background_half_width_nm: float = 1.5
+    global_dx_nm: float = 0.0
     center_offset_nm: float = 0.08
     sigma_min_nm: float = 0.015
     sigma_max_nm: float = 0.16
@@ -51,6 +52,10 @@ class LineFitResult:
     background_min_intensity: float = float("nan")
     background_median_intensity: float = float("nan")
     background_max_intensity: float = float("nan")
+    global_dx_nm: float = 0.0
+    expected_center_nm: float = float("nan")
+    center_offset_from_rest_nm: float = float("nan")
+    center_offset_from_expected_nm: float = float("nan")
 
     @property
     def relative_error(self) -> float:
@@ -72,10 +77,11 @@ def fit_single_line(
 ) -> LineFitResult:
     """Fit one Fulcher line with explicit local-minimum baseline reporting."""
     cfg = config or FitConfig()
-    line_min = line.wavelength_nm - cfg.line_half_width_nm
-    line_max = line.wavelength_nm + cfg.line_half_width_nm
-    background_min = line.wavelength_nm - cfg.background_half_width_nm
-    background_max = line.wavelength_nm + cfg.background_half_width_nm
+    expected_center = line.wavelength_nm + cfg.global_dx_nm
+    line_min = expected_center - cfg.line_half_width_nm
+    line_max = expected_center + cfg.line_half_width_nm
+    background_min = expected_center - cfg.background_half_width_nm
+    background_max = expected_center + cfg.background_half_width_nm
     background_window = spectrum.window(background_min, background_max)
     _, background_y = _finite_window(
         background_window.wavelength_nm, background_window.intensity
@@ -104,9 +110,9 @@ def fit_single_line(
     peak = max(float(np.nanmax(y)), np.finfo(float).eps)
     area0 = max(area0, peak * cfg.initial_sigma_nm * np.sqrt(2.0 * np.pi) * 0.5)
 
-    lower = [0.0, line.wavelength_nm - cfg.center_offset_nm, cfg.sigma_min_nm]
-    upper = [np.inf, line.wavelength_nm + cfg.center_offset_nm, cfg.sigma_max_nm]
-    p0 = [area0, line.wavelength_nm, cfg.initial_sigma_nm]
+    lower = [0.0, expected_center - cfg.center_offset_nm, cfg.sigma_min_nm]
+    upper = [np.inf, expected_center + cfg.center_offset_nm, cfg.sigma_max_nm]
+    p0 = [area0, expected_center, cfg.initial_sigma_nm]
 
     try:
         popt, pcov = curve_fit(
@@ -126,6 +132,10 @@ def fit_single_line(
             status = "ok;sigma_at_upper_bound"
         if abs(float(popt[2]) - cfg.sigma_min_nm) <= 1e-8:
             status = "ok;sigma_at_lower_bound"
+        if abs(float(popt[1]) - lower[1]) <= 1e-8:
+            status = f"{status};center_at_lower_bound"
+        if abs(float(popt[1]) - upper[1]) <= 1e-8:
+            status = f"{status};center_at_upper_bound"
     except Exception as exc:
         popt = np.array([np.nan, np.nan, np.nan])
         perr = np.array([np.nan, np.nan, np.nan])
@@ -161,6 +171,10 @@ def fit_single_line(
         background_min_intensity=background_stats[0],
         background_median_intensity=background_stats[1],
         background_max_intensity=background_stats[2],
+        global_dx_nm=cfg.global_dx_nm,
+        expected_center_nm=expected_center,
+        center_offset_from_rest_nm=float(popt[1] - line.wavelength_nm),
+        center_offset_from_expected_nm=float(popt[1] - expected_center),
     )
 
 
@@ -209,4 +223,8 @@ def _failed_result(
         background_min_intensity=background_stats[0],
         background_median_intensity=background_stats[1],
         background_max_intensity=background_stats[2],
+        global_dx_nm=cfg.global_dx_nm,
+        expected_center_nm=float("nan"),
+        center_offset_from_rest_nm=float("nan"),
+        center_offset_from_expected_nm=float("nan"),
     )

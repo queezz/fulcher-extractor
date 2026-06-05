@@ -68,6 +68,53 @@ def test_synthetic_single_gaussian_area_recovery():
     assert abs(result.center_nm - line.wavelength_nm) < 0.005
 
 
+def test_global_dx_recenters_fit_expectation():
+    import numpy as np
+
+    from fulcher_extractor.fit import FitConfig, fit_single_line
+    from fulcher_extractor.line_database import FulcherLine
+    from fulcher_extractor.line_models import gaussian_area_model
+    from fulcher_extractor.spectrocube_io import Spectrum
+
+    wavelength = np.linspace(612.0, 612.4, 401)
+    rest_nm = 612.1787
+    dx_nm = -0.035
+    intensity = 1.0 + gaussian_area_model(wavelength, 0.11, rest_nm + dx_nm, 0.045)
+    spectrum = Spectrum(
+        source_path=__file__,
+        shot_id="synthetic",
+        selectors={"frame": 0},
+        wavelength_nm=wavelength,
+        intensity=intensity,
+        intensity_units="a.u.",
+        wavelength_medium="air",
+        metadata={},
+    )
+    line = FulcherLine(
+        isotopologue="H2",
+        branch="Q",
+        v_upper=1,
+        v_lower=1,
+        band="1-1",
+        N=1,
+        wavelength_nm=rest_nm,
+        source_table="synthetic",
+        original_unit="nm",
+    )
+
+    result = fit_single_line(
+        spectrum,
+        line,
+        config=FitConfig(global_dx_nm=dx_nm, center_offset_nm=0.03),
+    )
+
+    assert result.success
+    assert result.global_dx_nm == dx_nm
+    assert abs(result.expected_center_nm - (rest_nm + dx_nm)) < 1e-12
+    assert abs(result.center_offset_from_rest_nm - dx_nm) < 0.002
+    assert abs(result.center_offset_from_expected_nm) < 0.002
+
+
 def test_archaeology_backed_output_matrix_convention():
     from fulcher_extractor.fit import LineFitResult
     from fulcher_extractor.output import results_to_matrices
