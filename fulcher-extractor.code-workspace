@@ -1,0 +1,18 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../fulcheranalyzer"
+		},
+		{
+			"path": "../2026-spectrocube"
+		},
+		{
+			"path": "../2026-spectroview"
+		}
+	],
+	"settings": {}
+}
+

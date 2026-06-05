@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fulcher-extractor"
+version = "0.1.0"
+description = "SpectroCube Fulcher-alpha line extraction with blended Gaussian fitting and QC."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "A. K.", email = "queezz@gmail.com" },
+]
+dependencies = [
+  "numpy",
+  "pandas",
+  "scipy",
+  "matplotlib",
+  "xarray",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "ipython",
+  "ipykernel",
+  "jupyter",
+]
+docs = [
+  "mkdocs",
+  "mkdocs-material",
+  "mkdocstrings[python]>=0.25",
+  "pymdown-extensions",
+]
+
+[project.scripts]
+fulcher-extract = "fulcher_extractor.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fulcher_extractor"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+pythonpath = ["src"]
