@@ -146,6 +146,13 @@ def plot_line_fit(
         alpha=0.65,
         label="database",
     )
+    _plot_line_label(
+        ax,
+        result.rest_wavelength_nm,
+        f"Q{result.N} {result.band}",
+        color="tab:blue",
+        y_fraction=0.98,
+    )
     if np.isfinite(result.expected_center_nm):
         ax.axvline(
             result.expected_center_nm,
@@ -204,8 +211,6 @@ def _plot_neighbor_lines(
     neighbor_lines: list[FulcherLine],
 ) -> None:
     colors = {"0-0": "tab:green", "1-1": "tab:orange", "2-2": "tab:cyan", "3-3": "tab:pink"}
-    ymin, ymax = ax.get_ylim()
-    y_text = ymax - 0.04 * (ymax - ymin)
     for line in neighbor_lines:
         if line.line_id == result.line_id:
             continue
@@ -213,16 +218,29 @@ def _plot_neighbor_lines(
             continue
         color = colors.get(line.band, "0.5")
         ax.axvline(line.wavelength_nm, color=color, lw=0.7, alpha=0.45)
-        ax.text(
-            line.wavelength_nm,
-            y_text,
-            f"Q{line.N} {line.band}",
-            rotation=90,
-            va="top",
-            ha="center",
-            fontsize=7,
-            color=color,
-        )
+        _plot_line_label(ax, line.wavelength_nm, f"Q{line.N} {line.band}", color=color)
+
+
+def _plot_line_label(
+    ax,
+    wavelength_nm: float,
+    label: str,
+    *,
+    color: str,
+    y_fraction: float = 0.94,
+) -> None:
+    ymin, ymax = ax.get_ylim()
+    y_text = ymin + y_fraction * (ymax - ymin)
+    ax.text(
+        wavelength_nm,
+        y_text,
+        label,
+        rotation=90,
+        va="top",
+        ha="center",
+        fontsize=7,
+        color=color,
+    )
 
 
 def _selector_label(spectrum: Spectrum) -> str:

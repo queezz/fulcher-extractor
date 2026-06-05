@@ -29,6 +29,7 @@ class FitConfig:
     instrument_sigma_leeway_nm: float = 0.015
     initial_sigma_nm: float = 0.055
     baseline_strategy: str = "local_minimum"
+    close_neighbor_threshold_nm: float | None = 0.15
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,9 @@ class LineFitResult:
     sigma_upper_bound_nm: float = float("nan")
     center_lower_bound_nm: float = float("nan")
     center_upper_bound_nm: float = float("nan")
+    blend_group_id: str = ""
+    blend_component_count: int = 1
+    close_neighbor_ids: str = ""
 
     @property
     def relative_error(self) -> float:
@@ -96,7 +100,185 @@ def fit_single_line(
     config: FitConfig | None = None,
 ) -> LineFitResult:
     """Fit one Fulcher line with explicit local-minimum baseline reporting."""
+    return _fit_single_line_core(spectrum, line, config or FitConfig())
+
+
+def fit_line_group(
+    spectrum: Spectrum,
+    lines: list[FulcherLine],
+    *,
+    config: FitConfig | None = None,
+) -> list[LineFitResult]:
+    """Fit one line or a close-neighbour group as a shared-width Gaussian sum."""
+    if len(lines) == 1:
+        return [fit_single_line(spectrum, lines[0], config=config)]
+
     cfg = config or FitConfig()
+    ordered = sorted(lines, key=lambda line: line.wavelength_nm)
+    expected = np.array([line.wavelength_nm + cfg.global_dx_nm for line in ordered])
+    line_left, line_right = _line_window_widths(cfg)
+    center_left, center_right = _center_offsets(cfg)
+    line_min = float(expected.min() - line_left)
+    line_max = float(expected.max() + line_right)
+    background_min = float(expected.min() - cfg.background_half_width_nm)
+    background_max = float(expected.max() + cfg.background_half_width_nm)
+    background_window = spectrum.window(background_min, background_max)
+    _, background_y = _finite_window(
+        background_window.wavelength_nm, background_window.intensity
+    )
+    background_stats = _background_stats(background_y)
+    window = spectrum.window(line_min, line_max)
+    x, y_raw = _finite_window(window.wavelength_nm, window.intensity)
+    group_id = "+".join(line.line_id for line in ordered)
+    close_ids = ",".join(line.line_id for line in ordered)
+
+    if x.size < 5:
+        return [
+            _failed_result(
+                line,
+                cfg,
+                line_min,
+                line_max,
+                background_min,
+                background_max,
+                "too_few_points;blend_group",
+                background_stats,
+                blend_group_id=group_id,
+                blend_component_count=len(ordered),
+                close_neighbor_ids=close_ids,
+            )
+            for line in ordered
+        ]
+
+    if cfg.baseline_strategy != "local_minimum":
+        raise ValueError(f"Unsupported baseline strategy: {cfg.baseline_strategy!r}")
+    baseline = local_minimum_baseline(y_raw)
+    y = y_raw - baseline
+    sigma_min, sigma_max, sigma_initial = _sigma_bounds(cfg)
+
+    peak_area = max(
+        float(np.trapezoid(np.clip(y, 0.0, None), x)),
+        float(np.nanmax(y)) * sigma_initial * np.sqrt(2.0 * np.pi),
+        np.finfo(float).eps,
+    )
+    weights = _relative_band_weights(ordered)
+    initial_areas = peak_area * weights / weights.sum()
+    p0 = list(initial_areas) + list(expected) + [sigma_initial]
+    lower = [0.0] * len(ordered)
+    lower += list(expected - center_left)
+    lower += [sigma_min]
+    upper = [np.inf] * len(ordered)
+    upper += list(expected + center_right)
+    upper += [sigma_max]
+
+    coincident = _has_coincident_database_lines(ordered)
+    try:
+        popt, pcov = curve_fit(
+            lambda wavelengths, *params: _blend_model(wavelengths, len(ordered), params),
+            x,
+            y,
+            p0=p0,
+            bounds=(lower, upper),
+            maxfev=40000,
+        )
+        y_fit = _blend_model(x, len(ordered), popt)
+        residual = y - y_fit
+        perr = np.sqrt(np.diag(pcov)) if pcov.size else np.full(len(popt), np.nan)
+        status = "ok;blend_group"
+        success = True
+        sigma = float(popt[-1])
+        if abs(sigma - sigma_max) <= 1e-8:
+            status = f"{status};sigma_at_upper_bound"
+        if abs(sigma - sigma_min) <= 1e-8:
+            status = f"{status};sigma_at_lower_bound"
+        if coincident:
+            status = f"{status};unresolved_coincident_database_lines"
+    except Exception as exc:
+        popt = np.full(2 * len(ordered) + 1, np.nan)
+        perr = np.full(2 * len(ordered) + 1, np.nan)
+        residual = np.full_like(y, np.nan)
+        status = f"fit_failed:{type(exc).__name__};blend_group"
+        success = False
+
+    sigma = float(popt[-1]) if np.isfinite(popt[-1]) else float("nan")
+    results = []
+    for idx, line in enumerate(ordered):
+        center = float(popt[len(ordered) + idx])
+        center_status = status
+        if np.isfinite(center) and abs(center - lower[len(ordered) + idx]) <= 1e-8:
+            center_status = f"{center_status};center_at_lower_bound"
+        if np.isfinite(center) and abs(center - upper[len(ordered) + idx]) <= 1e-8:
+            center_status = f"{center_status};center_at_upper_bound"
+        results.append(
+            LineFitResult(
+                line_id=line.line_id,
+                isotopologue=line.isotopologue,
+                branch=line.branch,
+                band=line.band,
+                N=line.N,
+                rest_wavelength_nm=line.wavelength_nm,
+                amplitude=float(popt[idx]),
+                amplitude_stderr=float(perr[idx]),
+                center_nm=center,
+                center_stderr_nm=float(perr[len(ordered) + idx]),
+                sigma_nm=sigma,
+                sigma_stderr_nm=float(perr[-1]),
+                fwhm_nm=float(2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma),
+                baseline_offset=float(baseline),
+                baseline_strategy=cfg.baseline_strategy,
+                window_min_nm=line_min,
+                window_max_nm=line_max,
+                background_min_nm=background_min,
+                background_max_nm=background_max,
+                n_points=int(x.size),
+                residual_rms=float(np.sqrt(np.nanmean(residual**2))),
+                success=success,
+                status=center_status,
+                background_min_intensity=background_stats[0],
+                background_median_intensity=background_stats[1],
+                background_max_intensity=background_stats[2],
+                global_dx_nm=cfg.global_dx_nm,
+                expected_center_nm=float(expected[idx]),
+                center_offset_from_rest_nm=float(center - line.wavelength_nm),
+                center_offset_from_expected_nm=float(center - expected[idx]),
+                sigma_lower_bound_nm=sigma_min,
+                sigma_upper_bound_nm=sigma_max,
+                center_lower_bound_nm=float(lower[len(ordered) + idx]),
+                center_upper_bound_nm=float(upper[len(ordered) + idx]),
+                blend_group_id=group_id,
+                blend_component_count=len(ordered),
+                close_neighbor_ids=close_ids,
+            )
+        )
+    return results
+
+
+def group_close_lines(
+    lines: list[FulcherLine], threshold_nm: float
+) -> list[list[FulcherLine]]:
+    """Connected components of database lines closer than *threshold_nm*."""
+    ordered = sorted(lines, key=lambda line: line.wavelength_nm)
+    groups: list[list[FulcherLine]] = []
+    current: list[FulcherLine] = []
+    for line in ordered:
+        if not current:
+            current = [line]
+            continue
+        if line.wavelength_nm - current[-1].wavelength_nm <= threshold_nm:
+            current.append(line)
+        else:
+            groups.append(current)
+            current = [line]
+    if current:
+        groups.append(current)
+    return groups
+
+
+def _fit_single_line_core(
+    spectrum: Spectrum,
+    line: FulcherLine,
+    cfg: FitConfig,
+) -> LineFitResult:
     expected_center = line.wavelength_nm + cfg.global_dx_nm
     line_left, line_right = _line_window_widths(cfg)
     center_left, center_right = _center_offsets(cfg)
@@ -249,6 +431,30 @@ def _background_stats(y: np.ndarray) -> tuple[float, float, float]:
     return float(np.min(finite)), float(np.median(finite)), float(np.max(finite))
 
 
+def _blend_model(
+    wavelength_nm: np.ndarray, component_count: int, params
+) -> np.ndarray:
+    areas = params[:component_count]
+    centers = params[component_count : 2 * component_count]
+    sigma = params[-1]
+    y = np.zeros_like(wavelength_nm, dtype=float)
+    for area, center in zip(areas, centers):
+        y += gaussian_area_model(wavelength_nm, float(area), float(center), float(sigma))
+    return y
+
+
+def _relative_band_weights(lines: list[FulcherLine]) -> np.ndarray:
+    weights_by_band = {"0-0": 1.0, "1-1": 0.45, "2-2": 0.20, "3-3": 0.08}
+    return np.array([weights_by_band.get(line.band, 0.1) for line in lines], dtype=float)
+
+
+def _has_coincident_database_lines(lines: list[FulcherLine]) -> bool:
+    wavelengths = sorted(line.wavelength_nm for line in lines)
+    return any(
+        abs(right - left) < 1e-6 for left, right in zip(wavelengths, wavelengths[1:])
+    )
+
+
 def _sigma_bounds(cfg: FitConfig) -> tuple[float, float, float]:
     if cfg.instrument_sigma_nm is None:
         return cfg.sigma_min_nm, cfg.sigma_max_nm, cfg.initial_sigma_nm
@@ -284,6 +490,9 @@ def _failed_result(
     background_max: float,
     status: str,
     background_stats: tuple[float, float, float] = (float("nan"), float("nan"), float("nan")),
+    blend_group_id: str = "",
+    blend_component_count: int = 1,
+    close_neighbor_ids: str = "",
 ) -> LineFitResult:
     sigma_min, sigma_max, _ = _sigma_bounds(cfg)
     center_left, center_right = _center_offsets(cfg)
@@ -323,4 +532,7 @@ def _failed_result(
         sigma_upper_bound_nm=sigma_max,
         center_lower_bound_nm=expected_center - center_left,
         center_upper_bound_nm=expected_center + center_right,
+        blend_group_id=blend_group_id,
+        blend_component_count=blend_component_count,
+        close_neighbor_ids=close_neighbor_ids,
     )

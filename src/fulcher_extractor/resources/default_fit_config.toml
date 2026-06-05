@@ -25,3 +25,4 @@ sigma_nm = 0.055
 [qc]
 max_center_offset_nm = 0.06
 max_relative_error = 0.5
+close_neighbor_threshold_nm = 0.15

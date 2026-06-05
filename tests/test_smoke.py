@@ -207,6 +207,54 @@ def test_estimate_instrument_width_filters_bad_lines():
     assert estimate.sigma_nm == 0.027
 
 
+def test_close_database_neighbours_fit_as_blend_group():
+    import numpy as np
+
+    from fulcher_extractor.extract import extract_lines
+    from fulcher_extractor.fit import FitConfig
+    from fulcher_extractor.line_database import FulcherLine
+    from fulcher_extractor.line_models import gaussian_area_model
+    from fulcher_extractor.spectrocube_io import Spectrum
+
+    wavelength = np.linspace(623.55, 624.05, 501)
+    line_a = FulcherLine("H2", "Q", 1, 1, "1-1", 9, 623.7457, "synthetic", "nm")
+    line_b = FulcherLine("H2", "Q", 2, 2, "2-2", 3, 623.8391, "synthetic", "nm")
+    sigma = 0.0273
+    intensity = 1.0
+    intensity += gaussian_area_model(wavelength, 0.08, line_a.wavelength_nm, sigma)
+    intensity += gaussian_area_model(wavelength, 0.03, line_b.wavelength_nm, sigma)
+    spectrum = Spectrum(
+        source_path=__file__,
+        shot_id="synthetic",
+        selectors={"frame": 0},
+        wavelength_nm=wavelength,
+        intensity=intensity,
+        intensity_units="a.u.",
+        wavelength_medium="air",
+        metadata={},
+    )
+
+    results = extract_lines(
+        spectrum,
+        lines=[line_a, line_b],
+        isotopologue="H2",
+        wavelength_min_nm=623.0,
+        wavelength_max_nm=624.0,
+        config=FitConfig(
+            instrument_sigma_nm=sigma,
+            instrument_sigma_leeway_nm=0.005,
+            close_neighbor_threshold_nm=0.10,
+        ),
+    )
+
+    assert len(results) == 2
+    assert {result.line_id for result in results} == {line_a.line_id, line_b.line_id}
+    assert all(result.blend_component_count == 2 for result in results)
+    assert all("blend_group" in result.status for result in results)
+    by_id = {result.line_id: result for result in results}
+    assert by_id[line_a.line_id].amplitude > by_id[line_b.line_id].amplitude
+
+
 def test_archaeology_backed_output_matrix_convention():
     from fulcher_extractor.fit import LineFitResult
     from fulcher_extractor.output import results_to_matrices
