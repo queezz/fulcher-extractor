@@ -115,6 +115,98 @@ def test_global_dx_recenters_fit_expectation():
     assert abs(result.center_offset_from_expected_nm) < 0.002
 
 
+def test_instrument_width_restricts_sigma_bounds():
+    import numpy as np
+
+    from fulcher_extractor.fit import FitConfig, fit_single_line
+    from fulcher_extractor.line_database import FulcherLine
+    from fulcher_extractor.line_models import gaussian_area_model
+    from fulcher_extractor.spectrocube_io import Spectrum
+
+    wavelength = np.linspace(622.3, 622.7, 401)
+    rest_nm = 622.4815
+    instrument_sigma = 0.0273
+    intensity = 1.0 + gaussian_area_model(wavelength, 0.10, rest_nm, instrument_sigma)
+    spectrum = Spectrum(
+        source_path=__file__,
+        shot_id="synthetic",
+        selectors={"frame": 0},
+        wavelength_nm=wavelength,
+        intensity=intensity,
+        intensity_units="a.u.",
+        wavelength_medium="air",
+        metadata={},
+    )
+    line = FulcherLine(
+        isotopologue="H2",
+        branch="Q",
+        v_upper=2,
+        v_lower=2,
+        band="2-2",
+        N=1,
+        wavelength_nm=rest_nm,
+        source_table="synthetic",
+        original_unit="nm",
+    )
+
+    result = fit_single_line(
+        spectrum,
+        line,
+        config=FitConfig(
+            instrument_sigma_nm=instrument_sigma,
+            instrument_sigma_leeway_nm=0.015,
+        ),
+    )
+
+    assert result.success
+    assert result.sigma_lower_bound_nm == 0.015
+    assert abs(result.sigma_upper_bound_nm - 0.0423) < 1e-12
+    assert abs(result.sigma_nm - instrument_sigma) < 0.001
+
+
+def test_estimate_instrument_width_filters_bad_lines():
+    from fulcher_extractor.fit import LineFitResult, estimate_instrument_width
+
+    def result(line_id, sigma, status="ok", relerr=0.03):
+        return LineFitResult(
+            line_id=line_id,
+            isotopologue="H2",
+            branch="Q",
+            band="0-0",
+            N=1,
+            rest_wavelength_nm=601.0,
+            amplitude=1.0,
+            amplitude_stderr=relerr,
+            center_nm=601.0,
+            center_stderr_nm=0.0,
+            sigma_nm=sigma,
+            sigma_stderr_nm=0.0,
+            fwhm_nm=2.354820045 * sigma,
+            baseline_offset=0.0,
+            baseline_strategy="local_minimum",
+            window_min_nm=600.8,
+            window_max_nm=601.2,
+            background_min_nm=599.5,
+            background_max_nm=602.5,
+            n_points=20,
+            residual_rms=0.0,
+            success=True,
+            status=status,
+        )
+
+    estimate = estimate_instrument_width(
+        [
+            result("good1", 0.026),
+            result("good2", 0.028),
+            result("wide", 0.16, "ok;sigma_at_upper_bound"),
+            result("noisy", 0.03, relerr=0.5),
+        ]
+    )
+
+    assert estimate.n_lines == 2
+    assert estimate.sigma_nm == 0.027
+
+
 def test_archaeology_backed_output_matrix_convention():
     from fulcher_extractor.fit import LineFitResult
     from fulcher_extractor.output import results_to_matrices

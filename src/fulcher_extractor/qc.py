@@ -59,6 +59,7 @@ def plot_line_fit(
     result: LineFitResult,
     *,
     components: list[dict[str, float | str]] | None = None,
+    neighbor_lines: list[FulcherLine] | None = None,
     output_path: str | Path | None = None,
 ):
     """Plot a zoomed line fit with data, Gaussian component(s), sum, and residual."""
@@ -163,6 +164,8 @@ def plot_line_fit(
             ls="-.",
             label="fit center",
         )
+    if neighbor_lines:
+        _plot_neighbor_lines(ax, result, neighbor_lines)
     ax.set_ylabel(f"Intensity [{spectrum.intensity_units}]")
     ax.set_title(
         f"{spectrum.shot_id or spectrum.source_path.stem} "
@@ -193,6 +196,33 @@ def plot_line_fit(
         output.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(output, dpi=180)
     return fig
+
+
+def _plot_neighbor_lines(
+    ax,
+    result: LineFitResult,
+    neighbor_lines: list[FulcherLine],
+) -> None:
+    colors = {"0-0": "tab:green", "1-1": "tab:orange", "2-2": "tab:cyan", "3-3": "tab:pink"}
+    ymin, ymax = ax.get_ylim()
+    y_text = ymax - 0.04 * (ymax - ymin)
+    for line in neighbor_lines:
+        if line.line_id == result.line_id:
+            continue
+        if not (result.window_min_nm <= line.wavelength_nm <= result.window_max_nm):
+            continue
+        color = colors.get(line.band, "0.5")
+        ax.axvline(line.wavelength_nm, color=color, lw=0.7, alpha=0.45)
+        ax.text(
+            line.wavelength_nm,
+            y_text,
+            f"Q{line.N} {line.band}",
+            rotation=90,
+            va="top",
+            ha="center",
+            fontsize=7,
+            color=color,
+        )
 
 
 def _selector_label(spectrum: Spectrum) -> str:

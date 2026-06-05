@@ -2,6 +2,8 @@ schema_version = 1
 
 [windows]
 line_half_width_nm = 0.18
+line_left_width_nm = 0.24
+line_right_width_nm = 0.18
 background_half_width_nm = 1.5
 
 [baseline]
@@ -10,8 +12,12 @@ strategy = "local_minimum"
 [bounds]
 global_dx_nm = 0.0
 center_offset_nm = 0.08
+center_left_offset_nm = 0.16
+center_right_offset_nm = 0.08
 sigma_min_nm = 0.015
 sigma_max_nm = 0.16
+instrument_sigma_nm = 0.0273
+instrument_sigma_leeway_nm = 0.015
 
 [initial]
 sigma_nm = 0.055
