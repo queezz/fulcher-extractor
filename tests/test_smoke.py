@@ -253,6 +253,10 @@ def test_close_database_neighbours_fit_as_blend_group():
     assert all("blend_group" in result.status for result in results)
     by_id = {result.line_id: result for result in results}
     assert by_id[line_a.line_id].amplitude > by_id[line_b.line_id].amplitude
+    fitted_spacing = by_id[line_b.line_id].center_nm - by_id[line_a.line_id].center_nm
+    database_spacing = line_b.wavelength_nm - line_a.wavelength_nm
+    assert abs(fitted_spacing - database_spacing) < 1e-12
+    assert by_id[line_a.line_id].blend_delta_nm == by_id[line_b.line_id].blend_delta_nm
 
 
 def test_archaeology_backed_output_matrix_convention():

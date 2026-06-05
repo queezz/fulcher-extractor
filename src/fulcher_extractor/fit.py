@@ -71,6 +71,7 @@ class LineFitResult:
     blend_group_id: str = ""
     blend_component_count: int = 1
     close_neighbor_ids: str = ""
+    blend_delta_nm: float = float("nan")
 
     @property
     def relative_error(self) -> float:
@@ -163,25 +164,25 @@ def fit_line_group(
     )
     weights = _relative_band_weights(ordered)
     initial_areas = peak_area * weights / weights.sum()
-    p0 = list(initial_areas) + list(expected) + [sigma_initial]
+    p0 = list(initial_areas) + [0.0, sigma_initial]
     lower = [0.0] * len(ordered)
-    lower += list(expected - center_left)
-    lower += [sigma_min]
+    lower += [-center_left, sigma_min]
     upper = [np.inf] * len(ordered)
-    upper += list(expected + center_right)
-    upper += [sigma_max]
+    upper += [center_right, sigma_max]
 
     coincident = _has_coincident_database_lines(ordered)
     try:
         popt, pcov = curve_fit(
-            lambda wavelengths, *params: _blend_model(wavelengths, len(ordered), params),
+            lambda wavelengths, *params: _blend_model(
+                wavelengths, len(ordered), expected, params
+            ),
             x,
             y,
             p0=p0,
             bounds=(lower, upper),
             maxfev=40000,
         )
-        y_fit = _blend_model(x, len(ordered), popt)
+        y_fit = _blend_model(x, len(ordered), expected, popt)
         residual = y - y_fit
         perr = np.sqrt(np.diag(pcov)) if pcov.size else np.full(len(popt), np.nan)
         status = "ok;blend_group"
@@ -194,20 +195,21 @@ def fit_line_group(
         if coincident:
             status = f"{status};unresolved_coincident_database_lines"
     except Exception as exc:
-        popt = np.full(2 * len(ordered) + 1, np.nan)
-        perr = np.full(2 * len(ordered) + 1, np.nan)
+        popt = np.full(len(ordered) + 2, np.nan)
+        perr = np.full(len(ordered) + 2, np.nan)
         residual = np.full_like(y, np.nan)
         status = f"fit_failed:{type(exc).__name__};blend_group"
         success = False
 
     sigma = float(popt[-1]) if np.isfinite(popt[-1]) else float("nan")
+    blend_delta = float(popt[-2]) if np.isfinite(popt[-2]) else float("nan")
     results = []
     for idx, line in enumerate(ordered):
-        center = float(popt[len(ordered) + idx])
+        center = float(expected[idx] + blend_delta)
         center_status = status
-        if np.isfinite(center) and abs(center - lower[len(ordered) + idx]) <= 1e-8:
+        if np.isfinite(blend_delta) and abs(blend_delta - lower[len(ordered)]) <= 1e-8:
             center_status = f"{center_status};center_at_lower_bound"
-        if np.isfinite(center) and abs(center - upper[len(ordered) + idx]) <= 1e-8:
+        if np.isfinite(blend_delta) and abs(blend_delta - upper[len(ordered)]) <= 1e-8:
             center_status = f"{center_status};center_at_upper_bound"
         results.append(
             LineFitResult(
@@ -220,7 +222,7 @@ def fit_line_group(
                 amplitude=float(popt[idx]),
                 amplitude_stderr=float(perr[idx]),
                 center_nm=center,
-                center_stderr_nm=float(perr[len(ordered) + idx]),
+                center_stderr_nm=float(perr[-2]),
                 sigma_nm=sigma,
                 sigma_stderr_nm=float(perr[-1]),
                 fwhm_nm=float(2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma),
@@ -243,11 +245,12 @@ def fit_line_group(
                 center_offset_from_expected_nm=float(center - expected[idx]),
                 sigma_lower_bound_nm=sigma_min,
                 sigma_upper_bound_nm=sigma_max,
-                center_lower_bound_nm=float(lower[len(ordered) + idx]),
-                center_upper_bound_nm=float(upper[len(ordered) + idx]),
+                center_lower_bound_nm=float(expected[idx] - center_left),
+                center_upper_bound_nm=float(expected[idx] + center_right),
                 blend_group_id=group_id,
                 blend_component_count=len(ordered),
                 close_neighbor_ids=close_ids,
+                blend_delta_nm=blend_delta,
             )
         )
     return results
@@ -432,10 +435,14 @@ def _background_stats(y: np.ndarray) -> tuple[float, float, float]:
 
 
 def _blend_model(
-    wavelength_nm: np.ndarray, component_count: int, params
+    wavelength_nm: np.ndarray,
+    component_count: int,
+    expected_centers_nm: np.ndarray,
+    params,
 ) -> np.ndarray:
     areas = params[:component_count]
-    centers = params[component_count : 2 * component_count]
+    delta_nm = params[component_count]
+    centers = expected_centers_nm + delta_nm
     sigma = params[-1]
     y = np.zeros_like(wavelength_nm, dtype=float)
     for area, center in zip(areas, centers):

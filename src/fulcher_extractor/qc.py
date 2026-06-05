@@ -12,6 +12,13 @@ from .line_database import FulcherLine
 from .line_models import gaussian_area_model
 from .spectrocube_io import Spectrum
 
+LINE_COLORS = {
+    "0-0": "tab:green",
+    "1-1": "tab:orange",
+    "2-2": "tab:cyan",
+    "3-3": "tab:pink",
+}
+
 
 def plot_region(
     spectrum: Spectrum,
@@ -129,12 +136,14 @@ def plot_line_fit(
         label=f"baseline {result.baseline_offset:.3g}",
     )
     for label, profile in component_profiles:
+        color = _line_color_from_label(label)
         ax.plot(
             x_model,
             result.baseline_offset + profile,
             lw=1.0,
             ls="--",
             alpha=0.75,
+            color=color,
             label=label,
         )
     if component_profiles:
@@ -210,13 +219,12 @@ def _plot_neighbor_lines(
     result: LineFitResult,
     neighbor_lines: list[FulcherLine],
 ) -> None:
-    colors = {"0-0": "tab:green", "1-1": "tab:orange", "2-2": "tab:cyan", "3-3": "tab:pink"}
     for line in neighbor_lines:
         if line.line_id == result.line_id:
             continue
         if not (result.window_min_nm <= line.wavelength_nm <= result.window_max_nm):
             continue
-        color = colors.get(line.band, "0.5")
+        color = LINE_COLORS.get(line.band, "0.5")
         ax.axvline(line.wavelength_nm, color=color, lw=0.7, alpha=0.45)
         _plot_line_label(ax, line.wavelength_nm, f"Q{line.N} {line.band}", color=color)
 
@@ -247,3 +255,10 @@ def _selector_label(spectrum: Spectrum) -> str:
     if not spectrum.selectors:
         return ""
     return " ".join(f"{key}={value}" for key, value in spectrum.selectors.items())
+
+
+def _line_color_from_label(label: str) -> str:
+    for band, color in LINE_COLORS.items():
+        if band in label:
+            return color
+    return "0.5"
