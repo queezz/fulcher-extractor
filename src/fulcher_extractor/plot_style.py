@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 
 BAND_COLORS = {
     "0-0": "#d55e00",
-    "1-1": "#e69f00",
-    "2-2": "#0072b2",
+    "1-1": "#009e73",
+    "2-2": "#e6ab02",
     "3-3": "#cc79a7",
 }
 

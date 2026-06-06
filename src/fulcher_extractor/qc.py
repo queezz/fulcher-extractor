@@ -34,6 +34,11 @@ def plot_region(
     wavelength_min_nm: float = 600.0,
     wavelength_max_nm: float = 630.0,
     lines: list[FulcherLine] | None = None,
+    label_lines: list[FulcherLine] | None = None,
+    guide_lines: list[FulcherLine] | None = None,
+    show_guides: bool = True,
+    show_all_line_labels: bool = False,
+    labels_above_axes: bool = True,
     output_path: str | Path | None = None,
 ):
     """Plot a wider wavelength region for background inspection."""
@@ -47,16 +52,32 @@ def plot_region(
         title = _spectrum_label(spectrum)
         ax.text(
             0.985,
-            0.94,
+            1.02,
             title,
             transform=ax.transAxes,
-            va="top",
+            va="bottom",
             ha="right",
             fontsize=9,
+            clip_on=False,
         )
         if lines:
-            _plot_band_rails(ax, lines, wavelength_min_nm, wavelength_max_nm)
+            labelled = lines if show_all_line_labels else label_lines
+            labelled = labelled if labelled is not None else lines
+            guides = guide_lines if guide_lines is not None else labelled
+            if show_guides:
+                _plot_region_guides(ax, guides, wavelength_min_nm, wavelength_max_nm)
+            _plot_band_rails(
+                ax,
+                lines,
+                wavelength_min_nm,
+                wavelength_max_nm,
+                label_lines=labelled,
+                show_all_line_labels=show_all_line_labels,
+                labels_above_axes=labels_above_axes,
+            )
         fig.tight_layout()
+        if labels_above_axes and lines:
+            fig.subplots_adjust(top=0.66)
     if output_path is not None:
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -278,6 +299,10 @@ def _plot_band_rails(
     lines: list[FulcherLine],
     wavelength_min_nm: float,
     wavelength_max_nm: float,
+    *,
+    label_lines: list[FulcherLine],
+    show_all_line_labels: bool,
+    labels_above_axes: bool,
 ) -> None:
     visible = [
         line
@@ -286,55 +311,105 @@ def _plot_band_rails(
     ]
     if not visible:
         return
-    ymin, ymax = ax.get_ylim()
-    span = ymax - ymin
+    labelled_ids = {line.line_id for line in label_lines}
+    transform = ax.get_xaxis_transform()
     by_band = sorted({line.band for line in visible})
-    rail_base = ymin + 0.88 * span
-    rail_gap = 0.105 * span
+    rail_base = 1.12 if labels_above_axes else 0.93
+    rail_gap = 0.13 if labels_above_axes else 0.09
     for band_index, band in enumerate(by_band):
         band_lines = [line for line in visible if line.band == band]
-        y = rail_base - band_index * rail_gap
-        if y <= ymin + 0.55 * span:
-            break
+        row_y = rail_base + band_index * rail_gap if labels_above_axes else rail_base - band_index * rail_gap
+        rail_y = row_y - 0.035
         color = band_color(band)
         x0 = min(line.wavelength_nm for line in band_lines)
         x1 = max(line.wavelength_nm for line in band_lines)
-        ax.hlines(y, x0, x1, color=color, lw=1.1)
-        ax.text(
+        ax.hlines(
+            rail_y,
+            x0,
             x1,
-            y + 0.035 * span,
+            color=color,
+            lw=1.1,
+            transform=transform,
+            clip_on=False,
+        )
+        ax.text(
+            x0 - 0.25,
+            rail_y,
             f"(v'-v'')=({band})",
             ha="right",
-            va="bottom",
+            va="center",
             fontsize=9,
             color="black",
+            transform=transform,
+            clip_on=False,
         )
         for line in band_lines:
             ax.vlines(
                 line.wavelength_nm,
-                y - 0.045 * span,
-                y,
+                rail_y - 0.04,
+                rail_y,
                 color=color,
                 lw=0.8,
+                transform=transform,
+                clip_on=False,
             )
-        _label_sparse_rail_lines(ax, band_lines, y, span)
+        _label_selected_rail_lines(
+            ax,
+            band_lines,
+            labelled_ids,
+            row_y,
+            transform,
+            show_all=show_all_line_labels,
+        )
 
 
-def _label_sparse_rail_lines(ax, lines: list[FulcherLine], y: float, span: float) -> None:
-    last_x = -np.inf
+def _label_selected_rail_lines(
+    ax,
+    lines,
+    labelled_ids: set[str],
+    y: float,
+    transform,
+    *,
+    show_all: bool,
+) -> None:
     for line in sorted(lines, key=lambda item: item.wavelength_nm):
-        if line.wavelength_nm - last_x < 0.55:
+        if not show_all and line.line_id not in labelled_ids:
             continue
         ax.text(
             line.wavelength_nm,
-            y + 0.012 * span,
+            y,
             f"Q{line.N}",
             ha="center",
             va="bottom",
             fontsize=8,
             color="black",
+            transform=transform,
+            clip_on=False,
         )
-        last_x = line.wavelength_nm
+
+
+def _plot_region_guides(
+    ax,
+    lines: list[FulcherLine],
+    wavelength_min_nm: float,
+    wavelength_max_nm: float,
+) -> None:
+    seen: set[float] = set()
+    for line in lines:
+        wavelength = line.wavelength_nm
+        if not (wavelength_min_nm <= wavelength <= wavelength_max_nm):
+            continue
+        rounded = round(wavelength, 5)
+        if rounded in seen:
+            continue
+        seen.add(rounded)
+        ax.axvline(
+            wavelength,
+            color=band_color(line.band),
+            lw=1.0,
+            alpha=0.5,
+            zorder=0,
+        )
 
 
 def _plot_component_markers(

@@ -347,12 +347,64 @@ def test_qc_region_plot_renders_with_band_rails(tmp_path):
         metadata={},
     )
     output = tmp_path / "region.png"
+    lines = load_lines()
+    label_lines = [
+        next(line for line in lines if line.line_id == "H2_Q4_0-0"),
+        next(line for line in lines if line.line_id == "H2_Q9_1-1"),
+        next(line for line in lines if line.line_id == "H2_Q3_2-2"),
+    ]
 
-    fig = plot_region(spectrum, lines=load_lines(), output_path=output)
+    fig = plot_region(
+        spectrum,
+        lines=lines,
+        label_lines=label_lines,
+        guide_lines=label_lines,
+        output_path=output,
+    )
 
     assert output.exists()
     assert output.stat().st_size > 0
     assert fig.axes[0].lines
+    labels = {text.get_text() for text in fig.axes[0].texts}
+    assert {"Q4", "Q9", "Q3"}.issubset(labels)
+    assert "Q1" not in labels
+    assert len(fig.axes[0].lines) >= 1 + len(label_lines)
+    plt.close(fig)
+
+
+def test_qc_region_plot_can_label_all_lines_for_identification(tmp_path):
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    from fulcher_extractor.line_database import load_lines
+    from fulcher_extractor.qc import plot_region
+    from fulcher_extractor.spectrocube_io import Spectrum
+
+    wavelength = np.linspace(600.0, 630.0, 1201)
+    spectrum = Spectrum(
+        source_path=__file__,
+        shot_id="synthetic",
+        selectors={"frame": 12},
+        wavelength_nm=wavelength,
+        intensity=np.ones_like(wavelength),
+        intensity_units="a.u.",
+        wavelength_medium="air",
+        metadata={},
+    )
+    lines = load_lines()
+    output = tmp_path / "region_all_labels.png"
+
+    fig = plot_region(
+        spectrum,
+        lines=lines,
+        show_all_line_labels=True,
+        output_path=output,
+    )
+
+    labels = [text.get_text() for text in fig.axes[0].texts]
+    assert output.exists()
+    assert labels.count("Q1") >= 2
+    assert "Q11" in labels
     plt.close(fig)
 
 
