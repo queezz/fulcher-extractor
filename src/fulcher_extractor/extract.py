@@ -31,6 +31,25 @@ class DecontaminationRule:
 
 
 DEFAULT_DECONTAMINATION_RULES = {
+    "H2_Q3_0-0": DecontaminationRule(
+        line_id="H2_Q3_0-0",
+        contaminants=(
+            ContaminantSpec(
+                label="blue_contaminant",
+                initial_offset_nm=-0.045,
+                lower_offset_nm=-0.060,
+                upper_offset_nm=-0.030,
+            ),
+            ContaminantSpec(
+                label="red_shoulder",
+                initial_offset_nm=0.060,
+                lower_offset_nm=0.030,
+                upper_offset_nm=0.100,
+            ),
+        ),
+        line_left_width_nm=0.10,
+        line_right_width_nm=0.11,
+    ),
     "H2_Q7_0-0": DecontaminationRule(
         line_id="H2_Q7_0-0",
         contaminants=(
@@ -54,9 +73,8 @@ DEFAULT_DECONTAMINATION_RULES = {
             ContaminantSpec(
                 label="red_shoulder_neighbor",
                 initial_offset_nm=0.075,
-                lower_offset_nm=0.075,
-                upper_offset_nm=0.075,
-                fixed_offset_nm=0.075,
+                lower_offset_nm=0.065,
+                upper_offset_nm=0.085,
             ),
         ),
         line_left_width_nm=0.07,
@@ -85,6 +103,19 @@ DEFAULT_DECONTAMINATION_RULES = {
                 upper_offset_nm=0.130,
             ),
         ),
+    ),
+    "H2_Q2_2-2": DecontaminationRule(
+        line_id="H2_Q2_2-2",
+        contaminants=(
+            ContaminantSpec(
+                label="blue_shoulder",
+                initial_offset_nm=-0.070,
+                lower_offset_nm=-0.085,
+                upper_offset_nm=-0.055,
+            ),
+        ),
+        line_left_width_nm=0.11,
+        line_right_width_nm=0.10,
     ),
 }
 

@@ -405,7 +405,70 @@ def test_q7_00_decontamination_keeps_target_area_for_matrix_export():
     )
 
 
-def test_q4_11_decontamination_uses_fixed_red_separation():
+def test_q3_00_decontamination_preserves_legacy_zeroed_export():
+    import numpy as np
+
+    from fulcher_extractor.extract import extract_lines
+    from fulcher_extractor.fit import FitConfig
+    from fulcher_extractor.line_database import FulcherLine
+    from fulcher_extractor.line_models import gaussian_area_model
+    from fulcher_extractor.output import results_to_matrices
+    from fulcher_extractor.spectrocube_io import Spectrum
+
+    sigma = 0.0273
+    target = FulcherLine("H2", "Q", 0, 0, "0-0", 3, 603.1909, "synthetic", "nm")
+    wavelength = np.linspace(603.04, 603.30, 261)
+    target_center = target.wavelength_nm - 0.004
+    intensity = 1.0
+    intensity += gaussian_area_model(wavelength, 0.090, target_center, sigma)
+    intensity += gaussian_area_model(wavelength, 0.018, target_center - 0.045, sigma)
+    intensity += gaussian_area_model(wavelength, 0.014, target_center + 0.060, sigma)
+    spectrum = Spectrum(
+        source_path=__file__,
+        shot_id="synthetic",
+        selectors={"frame": 0},
+        wavelength_nm=wavelength,
+        intensity=intensity,
+        intensity_units="a.u.",
+        wavelength_medium="air",
+        metadata={},
+    )
+
+    result = extract_lines(
+        spectrum,
+        lines=[target],
+        wavelength_min_nm=603.0,
+        wavelength_max_nm=603.4,
+        config=FitConfig(
+            instrument_sigma_nm=sigma,
+            instrument_sigma_leeway_nm=0.005,
+            close_neighbor_threshold_nm=0.10,
+        ),
+    )[0]
+    intensity_matrix, _ = results_to_matrices([result])
+    contaminant_centers = [
+        float(value) for value in result.contaminant_centers_nm.split(",")
+    ]
+    contaminant_sigmas = [
+        float(value) for value in result.contaminant_sigmas_nm.split(",")
+    ]
+
+    assert result.success
+    assert "decontaminated" in result.status
+    assert "legacy_deblend_reject" in result.status
+    assert result.legacy_matrix_action == "zero"
+    assert result.contaminant_component_count == 2
+    assert result.contaminant_labels == "blue_contaminant,red_shoulder"
+    assert abs(result.amplitude - 0.090) < 0.004
+    shoulder_offsets = [center - result.center_nm for center in contaminant_centers]
+    assert -0.060 <= shoulder_offsets[0] <= -0.030
+    assert 0.030 <= shoulder_offsets[1] <= 0.100
+    assert all(abs(sigma_nm - result.sigma_nm) < 1e-10 for sigma_nm in contaminant_sigmas)
+    assert result.matrix_amplitude == 0.0
+    assert intensity_matrix.loc[3, "0-0"] == 0.0
+
+
+def test_q4_11_decontamination_uses_soft_red_shoulder_distance():
     import numpy as np
 
     from fulcher_extractor.extract import extract_lines
@@ -455,7 +518,8 @@ def test_q4_11_decontamination_uses_fixed_red_separation():
     assert result.contaminant_labels == "red_shoulder_neighbor"
     assert result.blend_component_count == 2
     assert 0.0 < result.amplitude < 0.034 + 0.011
-    assert abs(contaminant_center - result.center_nm - 0.075) < 1e-7
+    shoulder_offset = contaminant_center - result.center_nm
+    assert 0.065 <= shoulder_offset <= 0.085
     assert abs(result.sigma_nm - sigma) < 0.002
     assert result.matrix_amplitude == result.amplitude
     assert intensity_matrix.loc[4, "1-1"] == result.amplitude
@@ -513,6 +577,61 @@ def test_q6_11_decontamination_uses_blue_and_red_neighbours():
     assert abs(result.sigma_nm - sigma) < 0.002
     assert result.matrix_amplitude == result.amplitude
     assert intensity_matrix.loc[6, "1-1"] == result.amplitude
+
+
+def test_q2_22_decontamination_uses_soft_blue_shoulder_distance():
+    import numpy as np
+
+    from fulcher_extractor.extract import extract_lines
+    from fulcher_extractor.fit import FitConfig
+    from fulcher_extractor.line_database import FulcherLine
+    from fulcher_extractor.line_models import gaussian_area_model
+    from fulcher_extractor.output import results_to_matrices
+    from fulcher_extractor.spectrocube_io import Spectrum
+
+    sigma = 0.0273
+    target = FulcherLine("H2", "Q", 2, 2, "2-2", 2, 623.0258, "synthetic", "nm")
+    wavelength = np.linspace(622.86, 623.15, 291)
+    target_center = target.wavelength_nm - 0.004
+    intensity = 1.0
+    intensity += gaussian_area_model(wavelength, 0.018, target_center, sigma)
+    intensity += gaussian_area_model(wavelength, 0.005, target_center - 0.070, sigma)
+    spectrum = Spectrum(
+        source_path=__file__,
+        shot_id="synthetic",
+        selectors={"frame": 0},
+        wavelength_nm=wavelength,
+        intensity=intensity,
+        intensity_units="a.u.",
+        wavelength_medium="air",
+        metadata={},
+    )
+
+    result = extract_lines(
+        spectrum,
+        lines=[target],
+        wavelength_min_nm=622.8,
+        wavelength_max_nm=623.2,
+        config=FitConfig(
+            instrument_sigma_nm=sigma,
+            instrument_sigma_leeway_nm=0.005,
+            close_neighbor_threshold_nm=0.10,
+        ),
+    )[0]
+    intensity_matrix, _ = results_to_matrices([result])
+    contaminant_center = float(result.contaminant_centers_nm)
+
+    assert result.success
+    assert "decontaminated" in result.status
+    assert "sigma_at_upper_bound" not in result.status
+    assert result.contaminant_component_count == 1
+    assert result.contaminant_labels == "blue_shoulder"
+    assert abs(result.amplitude - 0.018) < 0.003
+    shoulder_offset = contaminant_center - result.center_nm
+    assert -0.085 <= shoulder_offset <= -0.055
+    assert abs(result.sigma_nm - sigma) < 0.002
+    assert result.matrix_amplitude == result.amplitude
+    assert intensity_matrix.loc[2, "2-2"] == result.amplitude
 
 
 def test_archaeology_backed_output_matrix_convention():
