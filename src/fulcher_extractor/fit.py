@@ -109,6 +109,7 @@ class ContaminantSpec:
     initial_offset_nm: float
     lower_offset_nm: float
     upper_offset_nm: float
+    fixed_offset_nm: float | None = None
 
 
 def _finite_window(wavelength_nm: np.ndarray, intensity: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -350,22 +351,25 @@ def fit_line_with_contaminants(
     p0 = [target_initial_area]
     p0.extend([contaminant_initial_area] * len(contaminants))
     p0.append(expected_center)
-    p0.extend(expected_center + spec.initial_offset_nm for spec in contaminants)
+    independent_contaminants = [
+        spec for spec in contaminants if spec.fixed_offset_nm is None
+    ]
+    p0.extend(expected_center + spec.initial_offset_nm for spec in independent_contaminants)
     p0.append(sigma_initial)
 
     lower = [0.0] * component_count
     lower.append(target_lower)
-    lower.extend(expected_center + spec.lower_offset_nm for spec in contaminants)
+    lower.extend(expected_center + spec.lower_offset_nm for spec in independent_contaminants)
     lower.append(sigma_min)
     upper = [np.inf] * component_count
     upper.append(target_upper)
-    upper.extend(expected_center + spec.upper_offset_nm for spec in contaminants)
+    upper.extend(expected_center + spec.upper_offset_nm for spec in independent_contaminants)
     upper.append(sigma_max)
 
     try:
         popt, pcov = curve_fit(
-            lambda wavelengths, *params: _independent_component_model(
-                wavelengths, component_count, params
+            lambda wavelengths, *params: _contaminant_component_model(
+                wavelengths, contaminants, params
             ),
             x,
             y,
@@ -373,7 +377,7 @@ def fit_line_with_contaminants(
             bounds=(lower, upper),
             maxfev=60000,
         )
-        y_fit = _independent_component_model(x, component_count, popt)
+        y_fit = _contaminant_component_model(x, contaminants, popt)
         residual = y - y_fit
         perr = np.sqrt(np.diag(pcov)) if pcov.size else np.full(len(popt), np.nan)
         status = "ok;decontaminated;contaminant_components"
@@ -389,8 +393,8 @@ def fit_line_with_contaminants(
         if abs(target_center - target_upper) <= 1e-8:
             status = f"{status};center_at_upper_bound"
     except Exception as exc:
-        popt = np.full(2 * component_count + 1, np.nan)
-        perr = np.full(2 * component_count + 1, np.nan)
+        popt = np.full(len(p0), np.nan)
+        perr = np.full(len(p0), np.nan)
         residual = np.full_like(y, np.nan)
         status = f"fit_failed:{type(exc).__name__};decontaminated"
         success = False
@@ -398,9 +402,12 @@ def fit_line_with_contaminants(
     sigma = float(popt[-1]) if np.isfinite(popt[-1]) else float("nan")
     target_center = float(popt[component_count])
     contaminant_areas = [float(value) for value in popt[1:component_count]]
-    contaminant_centers = [
-        float(value) for value in popt[component_count + 1 : 2 * component_count]
-    ]
+    independent_centers = [float(value) for value in popt[component_count + 1 : -1]]
+    contaminant_centers = _contaminant_centers(
+        target_center,
+        contaminants,
+        independent_centers,
+    )
     return LineFitResult(
         line_id=line.line_id,
         isotopologue=line.isotopologue,
@@ -642,18 +649,42 @@ def _blend_model(
     return y
 
 
-def _independent_component_model(
+def _contaminant_component_model(
     wavelength_nm: np.ndarray,
-    component_count: int,
+    contaminants: list[ContaminantSpec],
     params,
 ) -> np.ndarray:
+    component_count = 1 + len(contaminants)
     areas = params[:component_count]
-    centers = params[component_count : 2 * component_count]
+    target_center = float(params[component_count])
+    independent_centers = [float(value) for value in params[component_count + 1 : -1]]
+    centers = [target_center] + _contaminant_centers(
+        target_center,
+        contaminants,
+        independent_centers,
+    )
     sigma = params[-1]
     y = np.zeros_like(wavelength_nm, dtype=float)
     for area, center in zip(areas, centers):
         y += gaussian_area_model(wavelength_nm, float(area), float(center), float(sigma))
     return y
+
+
+def _contaminant_centers(
+    target_center: float,
+    contaminants: list[ContaminantSpec],
+    independent_centers: list[float],
+) -> list[float]:
+    centers = []
+    independent_index = 0
+    for spec in contaminants:
+        if spec.fixed_offset_nm is None:
+            center = independent_centers[independent_index]
+            independent_index += 1
+        else:
+            center = target_center + spec.fixed_offset_nm
+        centers.append(float(center))
+    return centers
 
 
 def _join_floats(values: Iterable[float]) -> str:

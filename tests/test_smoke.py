@@ -405,6 +405,62 @@ def test_q7_00_decontamination_keeps_target_area_for_matrix_export():
     )
 
 
+def test_q4_11_decontamination_uses_fixed_red_separation():
+    import numpy as np
+
+    from fulcher_extractor.extract import extract_lines
+    from fulcher_extractor.fit import FitConfig
+    from fulcher_extractor.line_database import FulcherLine
+    from fulcher_extractor.line_models import gaussian_area_model
+    from fulcher_extractor.output import results_to_matrices
+    from fulcher_extractor.spectrocube_io import Spectrum
+
+    sigma = 0.0273
+    target = FulcherLine("H2", "Q", 1, 1, "1-1", 4, 614.6186, "synthetic", "nm")
+    wavelength = np.linspace(614.50, 614.78, 281)
+    target_center = target.wavelength_nm + 0.012
+    intensity = 1.0
+    intensity += gaussian_area_model(wavelength, 0.034, target_center, sigma)
+    intensity += gaussian_area_model(wavelength, 0.011, target_center + 0.075, sigma)
+    spectrum = Spectrum(
+        source_path=__file__,
+        shot_id="synthetic",
+        selectors={"frame": 0},
+        wavelength_nm=wavelength,
+        intensity=intensity,
+        intensity_units="a.u.",
+        wavelength_medium="air",
+        metadata={},
+    )
+
+    result = extract_lines(
+        spectrum,
+        lines=[target],
+        wavelength_min_nm=614.0,
+        wavelength_max_nm=615.0,
+        config=FitConfig(
+            instrument_sigma_nm=sigma,
+            instrument_sigma_leeway_nm=0.005,
+            close_neighbor_threshold_nm=0.10,
+        ),
+    )[0]
+    intensity_matrix, _ = results_to_matrices([result])
+    contaminant_center = float(result.contaminant_centers_nm)
+
+    assert result.success
+    assert "decontaminated" in result.status
+    assert "suspicious_decontamination" in result.status
+    assert "sigma_at_upper_bound" not in result.status
+    assert result.contaminant_component_count == 1
+    assert result.contaminant_labels == "red_shoulder_neighbor"
+    assert result.blend_component_count == 2
+    assert 0.0 < result.amplitude < 0.034 + 0.011
+    assert abs(contaminant_center - result.center_nm - 0.075) < 1e-7
+    assert abs(result.sigma_nm - sigma) < 0.002
+    assert result.matrix_amplitude == result.amplitude
+    assert intensity_matrix.loc[4, "1-1"] == result.amplitude
+
+
 def test_q6_11_decontamination_uses_blue_and_red_neighbours():
     import numpy as np
 
