@@ -247,6 +247,7 @@ def plot_line_fit_page(
     rows = math.ceil(len(groups) / columns)
     width = max(11.0, columns * 3.0)
     height = max(8.5, rows * 2.25)
+    x_width_nm = _line_fit_page_x_width_nm(groups)
     with fulcher_qc_style():
         fig, axes = plt.subplots(
             rows,
@@ -260,7 +261,15 @@ def plot_line_fit_page(
 
         for ax, group in zip(axes.flat, groups):
             ax.set_visible(True)
-            _plot_line_fit_panel(spectrum, group.reference, group.components, ax=ax)
+            center_nm = _line_fit_panel_center_nm(group)
+            xlim = (center_nm - 0.5 * x_width_nm, center_nm + 0.5 * x_width_nm)
+            _plot_line_fit_panel(
+                spectrum,
+                group.reference,
+                group.components,
+                ax=ax,
+                xlim=xlim,
+            )
 
         fig.suptitle(f"{_spectrum_label(spectrum)} line-fit QC", fontsize=14, y=0.995)
         fig.supxlabel("Wavelength [nm]", fontsize=11)
@@ -352,6 +361,37 @@ def _line_fit_groups(results: list[LineFitResult]) -> list[_LineFitGroup]:
     return sorted(groups, key=lambda item: item.reference.window_min_nm)
 
 
+def _line_fit_page_x_width_nm(groups: list[_LineFitGroup]) -> float:
+    widths = [
+        group.reference.window_max_nm - group.reference.window_min_nm
+        for group in groups
+        if np.isfinite(group.reference.window_min_nm)
+        and np.isfinite(group.reference.window_max_nm)
+        and group.reference.window_max_nm > group.reference.window_min_nm
+    ]
+    return max(widths) if widths else 0.4
+
+
+def _line_fit_panel_center_nm(group: _LineFitGroup) -> float:
+    centers = [
+        float(spec["center_nm"])
+        for spec in group.components
+        if "center_nm" in spec and np.isfinite(float(spec["center_nm"]))
+    ]
+    if centers:
+        return 0.5 * (min(centers) + max(centers))
+    fallback_centers = [
+        group.reference.center_nm,
+        group.reference.expected_center_nm,
+        group.reference.rest_wavelength_nm,
+        0.5 * (group.reference.window_min_nm + group.reference.window_max_nm),
+    ]
+    for center_nm in fallback_centers:
+        if np.isfinite(center_nm):
+            return float(center_nm)
+    return 0.0
+
+
 def _component_from_result(result: LineFitResult) -> FitComponentSpec:
     return {
         "label": result.line_id,
@@ -411,14 +451,25 @@ def _plot_line_fit_panel(
     component_specs: list[FitComponentSpec],
     *,
     ax,
+    xlim: tuple[float, float] | None = None,
 ) -> None:
-    window = spectrum.window(result.window_min_nm, result.window_max_nm)
+    display_min_nm = result.window_min_nm
+    display_max_nm = result.window_max_nm
+    if (
+        xlim is not None
+        and np.isfinite(xlim[0])
+        and np.isfinite(xlim[1])
+        and xlim[1] > xlim[0]
+    ):
+        display_min_nm, display_max_nm = xlim
+
+    window = spectrum.window(display_min_nm, display_max_nm)
     x = window.wavelength_nm
     y = window.intensity
     finite = np.isfinite(x) & np.isfinite(y)
     x = x[finite]
     y = y[finite]
-    x_model = np.linspace(result.window_min_nm, result.window_max_nm, 360)
+    x_model = np.linspace(display_min_nm, display_max_nm, 360)
 
     ax.plot(x, y, ":+", lw=0.75, ms=3.0, mew=0.65, color="black", label="data")
     if np.isfinite(result.baseline_offset):
@@ -483,6 +534,8 @@ def _plot_line_fit_panel(
     _plot_fit_panel_status_text(ax, result)
     set_inward_ticks(ax)
     ax.tick_params(labelsize=7)
+    if xlim is not None:
+        ax.set_xlim(*xlim)
     ax.margins(x=0.02, y=0.12)
 
 

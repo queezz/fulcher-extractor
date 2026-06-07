@@ -35,9 +35,17 @@ SpectroCube .nc
 
 ## Development
 
+Use the Fulcher virtual environment explicitly. Future agents should run tests
+and scripts through this interpreter:
+
 ```bash
-python -m pip install -e ".[dev,docs]"
-pytest
-mkdocs serve
+/Users/queezz/.venvs/fulcher/bin/python -m pip install -e ".[dev,docs]"
+/Users/queezz/.venvs/fulcher/bin/python -m pytest
+/Users/queezz/.venvs/fulcher/bin/python -m mkdocs serve
 ```
 
+Ignored local run outputs should use a date-time prefix:
+
+```text
+local/runs/YYYYMMDD-HHMM-short-description/
+```

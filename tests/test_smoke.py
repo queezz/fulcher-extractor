@@ -1068,6 +1068,30 @@ def test_qc_line_fit_page_pdf_and_optional_pngs(tmp_path):
     assert visible_axes[1].get_title(loc="left") == "Q9(1-1) + Q3(2-2)"
     assert not visible_axes[2].get_title(loc="right")
     assert any("unresolved" in text.get_text() for text in visible_axes[2].texts)
+    x_limits = [ax.get_xlim() for ax in visible_axes]
+    x_widths = [right - left for left, right in x_limits]
+    assert np.allclose(x_widths, x_widths[0])
+    by_id = {result.line_id: result for result in results}
+    expected_centers = [
+        by_id["H2_Q4_0-0"].center_nm,
+        0.5
+        * (
+            min(by_id["H2_Q9_1-1"].center_nm, by_id["H2_Q3_2-2"].center_nm)
+            + max(by_id["H2_Q9_1-1"].center_nm, by_id["H2_Q3_2-2"].center_nm)
+        ),
+        0.5
+        * (
+            min(by_id["H2_Q10_1-1"].center_nm, by_id["H2_Q5_2-2"].center_nm)
+            + max(by_id["H2_Q10_1-1"].center_nm, by_id["H2_Q5_2-2"].center_nm)
+        ),
+    ]
+    actual_centers = [0.5 * (left + right) for left, right in x_limits]
+    assert np.allclose(actual_centers, expected_centers, atol=1e-9)
+    wavelength_step = wavelength[1] - wavelength[0]
+    for ax, (left, right) in zip(visible_axes, x_limits):
+        data_x = ax.lines[0].get_xdata()
+        assert data_x.min() <= left + wavelength_step
+        assert data_x.max() >= right - wavelength_step
     plt.close(fig)
 
     written = write_line_fit_qc(
