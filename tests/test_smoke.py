@@ -782,7 +782,8 @@ def test_qc_line_fit_page_pdf_and_optional_pngs(tmp_path):
     assert len(visible_axes) == 3
     assert visible_axes[0].get_title(loc="left") == "Q4(0-0)"
     assert visible_axes[1].get_title(loc="left") == "Q9(1-1) + Q3(2-2)"
-    assert visible_axes[2].get_title(loc="right").endswith("unresolved")
+    assert not visible_axes[2].get_title(loc="right")
+    assert any("unresolved" in text.get_text() for text in visible_axes[2].texts)
     plt.close(fig)
 
     written = write_line_fit_qc(

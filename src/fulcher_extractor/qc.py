@@ -440,7 +440,7 @@ def _plot_line_fit_panel(
         ax.plot(x_model, y_sum_raw, lw=1.15, color=FIT_SUM_COLOR)
 
     ax.set_title(_fit_panel_title(result, component_specs), loc="left", fontsize=8, pad=2)
-    ax.set_title(_fit_panel_status(result), loc="right", fontsize=6.5, pad=2, color="0.35")
+    _plot_fit_panel_status_text(ax, result)
     set_inward_ticks(ax)
     ax.tick_params(labelsize=7)
     ax.margins(x=0.02, y=0.12)
@@ -478,6 +478,23 @@ def _fit_panel_status(result: LineFitResult) -> str:
     elif not result.success:
         parts.append("failed")
     return " | ".join(parts)
+
+
+def _plot_fit_panel_status_text(ax, result: LineFitResult) -> None:
+    status = _fit_panel_status(result)
+    if not status:
+        return
+    ax.text(
+        0.985,
+        0.94,
+        status,
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=6.5,
+        color="0.35",
+        bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.72, "pad": 1.4},
+    )
 
 
 def _plot_neighbor_lines(
