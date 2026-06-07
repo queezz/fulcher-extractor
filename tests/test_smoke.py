@@ -635,3 +635,74 @@ def test_qc_line_fit_plot_can_hide_markers_and_show_contamination(tmp_path):
     assert "status:" not in "\n".join(text.get_text() for text in fig.axes[1].texts)
     assert fig.axes[1].get_title(loc="left").startswith("status: ok")
     plt.close(fig)
+
+
+def test_qc_line_fit_page_pdf_and_optional_pngs(tmp_path):
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    from fulcher_extractor.extract import extract_lines
+    from fulcher_extractor.fit import FitConfig
+    from fulcher_extractor.line_database import FulcherLine
+    from fulcher_extractor.line_models import gaussian_area_model
+    from fulcher_extractor.qc import plot_line_fit_page, write_line_fit_qc
+    from fulcher_extractor.spectrocube_io import Spectrum
+
+    sigma = 0.0273
+    lines = [
+        FulcherLine("H2", "Q", 0, 0, "0-0", 4, 607.4827, "synthetic", "nm"),
+        FulcherLine("H2", "Q", 1, 1, "1-1", 9, 623.7457, "synthetic", "nm"),
+        FulcherLine("H2", "Q", 2, 2, "2-2", 3, 623.8391, "synthetic", "nm"),
+        FulcherLine("H2", "Q", 1, 1, "1-1", 10, 626.2495, "synthetic", "nm"),
+        FulcherLine("H2", "Q", 2, 2, "2-2", 5, 626.2495, "synthetic", "nm"),
+    ]
+    wavelength = np.linspace(606.9, 626.7, 2200)
+    intensity = 1.0 + 0.01 * np.sin(wavelength * 3.0)
+    for line, area in zip(lines, [0.12, 0.08, 0.03, 0.05, 0.025]):
+        intensity += gaussian_area_model(wavelength, area, line.wavelength_nm, sigma)
+    spectrum = Spectrum(
+        source_path=__file__,
+        shot_id="synthetic",
+        selectors={"frame": 0},
+        wavelength_nm=wavelength,
+        intensity=intensity,
+        intensity_units="a.u.",
+        wavelength_medium="air",
+        metadata={},
+    )
+    results = extract_lines(
+        spectrum,
+        lines=lines,
+        wavelength_min_nm=606.0,
+        wavelength_max_nm=627.0,
+        config=FitConfig(
+            instrument_sigma_nm=sigma,
+            instrument_sigma_leeway_nm=0.005,
+            close_neighbor_threshold_nm=0.10,
+        ),
+    )
+    pdf_output = tmp_path / "frame_line_fits.pdf"
+
+    fig = plot_line_fit_page(spectrum, results, columns=2, output_path=pdf_output)
+
+    assert pdf_output.exists()
+    assert pdf_output.stat().st_size > 0
+    visible_axes = [ax for ax in fig.axes if ax.get_visible()]
+    assert len(visible_axes) == 3
+    assert visible_axes[0].get_title(loc="left") == "Q4(0-0)"
+    assert visible_axes[1].get_title(loc="left") == "Q9(1-1) + Q3(2-2)"
+    assert visible_axes[2].get_title(loc="right").endswith("unresolved")
+    plt.close(fig)
+
+    written = write_line_fit_qc(
+        spectrum,
+        results,
+        pdf_path=tmp_path / "frame_line_fits_wrapped.pdf",
+        individual_dir=tmp_path / "line_pngs",
+        save_individual_pngs=True,
+        columns=2,
+    )
+
+    assert len(written) == 4
+    assert all(path.exists() and path.stat().st_size > 0 for path in written)
+    assert len(list((tmp_path / "line_pngs").glob("*.png"))) == 3

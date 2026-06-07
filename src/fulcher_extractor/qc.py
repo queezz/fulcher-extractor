@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 
+from matplotlib.backends.backend_pdf import PdfPages
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -26,6 +28,8 @@ LINE_COLORS = {
     "2-2": band_color("2-2", component=True),
     "3-3": band_color("3-3", component=True),
 }
+
+FitComponentSpec = dict[str, float | str]
 
 
 def plot_region(
@@ -232,6 +236,244 @@ def plot_line_fit(
         output.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(output, dpi=180)
     return fig
+
+
+def plot_line_fit_page(
+    spectrum: Spectrum,
+    results: list[LineFitResult],
+    *,
+    columns: int = 5,
+    output_path: str | Path | None = None,
+):
+    """Plot all fitted line groups for one spectrum on one large QC page."""
+    groups = _line_fit_groups(results)
+    if not groups:
+        raise ValueError("At least one LineFitResult is required.")
+    if columns < 1:
+        raise ValueError("columns must be >= 1.")
+
+    rows = math.ceil(len(groups) / columns)
+    width = max(11.0, columns * 3.0)
+    height = max(8.5, rows * 2.25)
+    with fulcher_qc_style():
+        fig, axes = plt.subplots(
+            rows,
+            columns,
+            figsize=(width, height),
+            squeeze=False,
+            sharey=False,
+        )
+        for ax in axes.flat:
+            ax.set_visible(False)
+
+        for ax, group in zip(axes.flat, groups):
+            ax.set_visible(True)
+            _plot_line_fit_panel(spectrum, group.reference, group.components, ax=ax)
+
+        fig.suptitle(f"{_spectrum_label(spectrum)} line-fit QC", fontsize=14, y=0.995)
+        fig.supxlabel("Wavelength [nm]", fontsize=11)
+        fig.supylabel(f"Intensity [{spectrum.intensity_units}]", fontsize=11)
+        fig.tight_layout(rect=(0.025, 0.025, 0.995, 0.975))
+
+    if output_path is not None:
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if output.suffix.lower() == ".pdf":
+            with PdfPages(output) as pdf:
+                pdf.savefig(fig)
+        else:
+            fig.savefig(output, dpi=180)
+    return fig
+
+
+def write_line_fit_qc(
+    spectrum: Spectrum,
+    results: list[LineFitResult],
+    *,
+    pdf_path: str | Path | None = None,
+    individual_dir: str | Path | None = None,
+    save_individual_pngs: bool = False,
+    columns: int = 5,
+) -> list[Path]:
+    """Write line-fit QC artifacts for one spectrum.
+
+    The PDF page is intended for normal human review. Individual PNGs remain
+    available for detailed fitting checks, but are opt-in for batch runs.
+    """
+    written: list[Path] = []
+    groups = _line_fit_groups(results)
+
+    if pdf_path is not None:
+        pdf_output = Path(pdf_path)
+        plot_line_fit_page(spectrum, results, columns=columns, output_path=pdf_output)
+        written.append(pdf_output)
+
+    if save_individual_pngs:
+        if individual_dir is None:
+            raise ValueError("individual_dir is required when save_individual_pngs=True.")
+        png_dir = Path(individual_dir)
+        png_dir.mkdir(parents=True, exist_ok=True)
+        for group in groups:
+            output = png_dir / f"{_safe_line_group_name(group.reference)}.png"
+            fig = plot_line_fit(
+                spectrum,
+                group.reference,
+                components=group.components,
+                output_path=output,
+            )
+            plt.close(fig)
+            written.append(output)
+
+    return written
+
+
+class _LineFitGroup:
+    def __init__(
+        self,
+        reference: LineFitResult,
+        components: list[FitComponentSpec],
+    ) -> None:
+        self.reference = reference
+        self.components = components
+
+
+def _line_fit_groups(results: list[LineFitResult]) -> list[_LineFitGroup]:
+    by_group: dict[str, list[LineFitResult]] = {}
+    for result in results:
+        key = result.blend_group_id or result.line_id
+        by_group.setdefault(key, []).append(result)
+
+    groups = []
+    for grouped in by_group.values():
+        ordered = sorted(grouped, key=lambda item: (item.rest_wavelength_nm, item.line_id))
+        reference = ordered[0]
+        groups.append(
+            _LineFitGroup(
+                reference=reference,
+                components=[_component_from_result(result) for result in ordered],
+            )
+        )
+    return sorted(groups, key=lambda item: item.reference.window_min_nm)
+
+
+def _component_from_result(result: LineFitResult) -> FitComponentSpec:
+    return {
+        "label": result.line_id,
+        "amplitude": result.amplitude,
+        "center_nm": result.center_nm,
+        "sigma_nm": result.sigma_nm,
+        "rest_wavelength_nm": result.rest_wavelength_nm,
+    }
+
+
+def _safe_line_group_name(result: LineFitResult) -> str:
+    name = result.blend_group_id or result.line_id
+    return name.replace("+", "__").replace(",", "__").replace("/", "-")
+
+
+def _plot_line_fit_panel(
+    spectrum: Spectrum,
+    result: LineFitResult,
+    component_specs: list[FitComponentSpec],
+    *,
+    ax,
+) -> None:
+    window = spectrum.window(result.window_min_nm, result.window_max_nm)
+    x = window.wavelength_nm
+    y = window.intensity
+    finite = np.isfinite(x) & np.isfinite(y)
+    x = x[finite]
+    y = y[finite]
+    x_model = np.linspace(result.window_min_nm, result.window_max_nm, 360)
+
+    ax.plot(x, y, ":+", lw=0.75, ms=3.0, mew=0.65, color="black", label="data")
+    if np.isfinite(result.baseline_offset):
+        ax.axhline(result.baseline_offset, color=BASELINE_COLOR, lw=0.7, ls=":")
+
+    profiles = []
+    for spec in component_specs:
+        if not _finite_component(spec):
+            continue
+        label = str(spec.get("label", "component"))
+        color = _component_color(spec, label)
+        profile = gaussian_area_model(
+            x_model,
+            float(spec["amplitude"]),
+            float(spec["center_nm"]),
+            float(spec["sigma_nm"]),
+        )
+        profiles.append(profile)
+        is_target = label == result.line_id
+        ax.plot(
+            x_model,
+            result.baseline_offset + profile,
+            lw=0.95 if is_target else 0.8,
+            ls="-" if is_target else "--",
+            alpha=0.92,
+            color=color,
+        )
+        ax.fill_between(
+            x_model,
+            result.baseline_offset,
+            result.baseline_offset + profile,
+            facecolor="none",
+            edgecolor=color,
+            hatch="////",
+            linewidth=0.0,
+            alpha=0.20,
+        )
+        _label_component(ax, x_model, result.baseline_offset + profile, spec, label, color)
+        rest_wavelength = _component_rest_wavelength(spec, result)
+        if np.isfinite(rest_wavelength):
+            _plot_short_tick(
+                ax,
+                rest_wavelength,
+                color=color,
+                y0=0.04,
+                y1=0.18,
+                lw=0.75,
+                ls=":",
+            )
+
+    if profiles:
+        y_sum_raw = result.baseline_offset + np.sum(profiles, axis=0)
+        ax.plot(x_model, y_sum_raw, lw=1.15, color=FIT_SUM_COLOR)
+
+    ax.set_title(_fit_panel_title(result, component_specs), loc="left", fontsize=8, pad=2)
+    ax.set_title(_fit_panel_status(result), loc="right", fontsize=6.5, pad=2, color="0.35")
+    set_inward_ticks(ax)
+    ax.tick_params(labelsize=7)
+    ax.margins(x=0.02, y=0.12)
+
+
+def _finite_component(spec: FitComponentSpec) -> bool:
+    keys = ("amplitude", "center_nm", "sigma_nm")
+    return all(key in spec and np.isfinite(float(spec[key])) for key in keys)
+
+
+def _fit_panel_title(
+    result: LineFitResult,
+    component_specs: list[FitComponentSpec],
+) -> str:
+    title = _fit_title(result, component_specs)
+    if "H2 " in title:
+        title = title.replace("H2 ", "", 1)
+    return title
+
+
+def _fit_panel_status(result: LineFitResult) -> str:
+    parts = []
+    if np.isfinite(result.center_offset_from_rest_nm):
+        parts.append(f"dx={result.center_offset_from_rest_nm:+.3g} nm")
+    if np.isfinite(result.relative_error):
+        parts.append(f"err={result.relative_error:.2g}")
+    if "unresolved_coincident_database_lines" in result.status:
+        parts.append("unresolved")
+    elif "bound" in result.status:
+        parts.append("bound")
+    elif not result.success:
+        parts.append("failed")
+    return " | ".join(parts)
 
 
 def _plot_neighbor_lines(
