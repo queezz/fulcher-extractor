@@ -439,7 +439,13 @@ def _plot_line_fit_panel(
         y_sum_raw = result.baseline_offset + np.sum(profiles, axis=0)
         ax.plot(x_model, y_sum_raw, lw=1.15, color=FIT_SUM_COLOR)
 
-    ax.set_title(_fit_panel_title(result, component_specs), loc="left", fontsize=8, pad=2)
+    ax.set_title(
+        _fit_panel_title(result, component_specs),
+        loc="left",
+        fontsize=8,
+        pad=2,
+        y=1.08,
+    )
     _plot_fit_panel_status_text(ax, result)
     set_inward_ticks(ax)
     ax.tick_params(labelsize=7)
@@ -486,13 +492,14 @@ def _plot_fit_panel_status_text(ax, result: LineFitResult) -> None:
         return
     ax.text(
         0.985,
-        0.94,
+        1.01,
         status,
         transform=ax.transAxes,
         ha="right",
-        va="top",
+        va="bottom",
         fontsize=6.5,
         color="0.35",
+        clip_on=False,
         bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.72, "pad": 1.4},
     )
 
