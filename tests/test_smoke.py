@@ -361,6 +361,82 @@ def test_overview_qc_lines_include_trusted_decontaminated_lines():
     assert "H2_Q4_1-1" not in labels
 
 
+def test_clean_sigma_mask_excludes_rejected_suspicious_failed_and_bound_rows():
+    import pandas as pd
+
+    from fulcher_extractor.sigma_stats import clean_sigma_mask, summarize_sigma
+
+    rows = [
+        {
+            "line_id": "H2_Q1_0-0",
+            "success": True,
+            "status": "ok;legacy_line_scale_used",
+            "legacy_policy": "line_scale_used",
+            "sigma_nm": 0.027,
+            "sigma_lower_bound_nm": 0.015,
+            "sigma_upper_bound_nm": 0.0423,
+        },
+        {
+            "line_id": "H2_Q6_1-1",
+            "success": True,
+            "status": "ok;decontaminated",
+            "legacy_policy": "",
+            "sigma_nm": 0.029,
+            "sigma_lower_bound_nm": 0.015,
+            "sigma_upper_bound_nm": 0.0423,
+        },
+        {
+            "line_id": "H2_Q3_0-0",
+            "success": True,
+            "status": "ok;decontaminated;legacy_deblend_reject",
+            "legacy_policy": "deblend_reject",
+            "sigma_nm": 0.028,
+            "sigma_lower_bound_nm": 0.015,
+            "sigma_upper_bound_nm": 0.0423,
+        },
+        {
+            "line_id": "H2_Q4_1-1",
+            "success": True,
+            "status": "ok;decontaminated;suspicious_decontamination",
+            "legacy_policy": "",
+            "sigma_nm": 0.030,
+            "sigma_lower_bound_nm": 0.015,
+            "sigma_upper_bound_nm": 0.0423,
+        },
+        {
+            "line_id": "H2_Q5_0-0",
+            "success": True,
+            "status": "ok;sigma_at_upper_bound",
+            "legacy_policy": "line_scale_used",
+            "sigma_nm": 0.0423,
+            "sigma_lower_bound_nm": 0.015,
+            "sigma_upper_bound_nm": 0.0423,
+        },
+        {
+            "line_id": "H2_Q7_0-0",
+            "success": False,
+            "status": "fit_failed:RuntimeError",
+            "legacy_policy": "deblend_accept",
+            "sigma_nm": 0.027,
+            "sigma_lower_bound_nm": 0.015,
+            "sigma_upper_bound_nm": 0.0423,
+        },
+    ]
+    table = pd.DataFrame(rows)
+
+    mask = clean_sigma_mask(
+        table,
+        line_ids={"H2_Q1_0-0", "H2_Q6_1-1", "H2_Q3_0-0", "H2_Q4_1-1", "H2_Q5_0-0"},
+    )
+    kept = table.loc[mask, "line_id"].tolist()
+    stats = summarize_sigma(table, mask)
+
+    assert kept == ["H2_Q1_0-0", "H2_Q6_1-1"]
+    assert stats.count == 2
+    assert stats.min == 0.027
+    assert stats.max == 0.029
+
+
 def test_q7_00_decontamination_keeps_target_area_for_matrix_export():
     import numpy as np
 
