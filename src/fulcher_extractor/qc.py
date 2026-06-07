@@ -463,6 +463,10 @@ def _fit_panel_title(
 
 def _fit_panel_status(result: LineFitResult) -> str:
     parts = []
+    if result.legacy_matrix_action == "zero":
+        parts.append("legacy zero")
+    elif result.legacy_policy in {"suspicious", "accept_with_warning"}:
+        parts.append(result.legacy_policy.replace("_", " "))
     if np.isfinite(result.center_offset_from_rest_nm):
         parts.append(f"dx={result.center_offset_from_rest_nm:+.3g} nm")
     if np.isfinite(result.relative_error):
@@ -770,6 +774,10 @@ def _plot_fit_note(ax, result: LineFitResult) -> None:
         lines.insert(1, f"blend: {result.blend_component_count} components")
     if "unresolved_coincident_database_lines" in result.status:
         lines.insert(1, "unresolved: no spectral split")
+    if result.legacy_policy:
+        lines.append(f"legacy: {result.legacy_policy.replace('_', ' ')}")
+    if result.legacy_matrix_action == "zero":
+        lines.append("matrix export: zero")
     ax.text(
         0.015,
         0.95,

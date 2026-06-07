@@ -7,20 +7,29 @@ from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
+import numpy as np
 
 from .fit import LineFitResult
 
 
 def results_to_dataframe(results: Iterable[LineFitResult]) -> pd.DataFrame:
     """Return one long-form audit row per fitted line."""
-    return pd.DataFrame([asdict(result) for result in results])
+    rows = []
+    for result in results:
+        row = asdict(result)
+        if not np.isfinite(float(row.get("matrix_amplitude", float("nan")))):
+            row["matrix_amplitude"] = row["amplitude"]
+        if not np.isfinite(float(row.get("matrix_amplitude_stderr", float("nan")))):
+            row["matrix_amplitude_stderr"] = row["amplitude_stderr"]
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def results_to_matrices(
     results: Iterable[LineFitResult],
     *,
-    value_column: str = "amplitude",
-    error_column: str = "amplitude_stderr",
+    value_column: str = "matrix_amplitude",
+    error_column: str = "matrix_amplitude_stderr",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Build fulcheranalyzer-compatible intensity/error matrices."""
     df = results_to_dataframe(results)

@@ -1,0 +1,86 @@
+schema_version = 1
+description = "Recovered shot-152478 CMOS H2 Q-branch legacy decisions and line-scale usage hints."
+
+[line_scale.h2_152478_cmos]
+source = "2026-Fulcher-workflow/runs/line_scale_extraction/2026-06-07-h2-line-scale-used-lines.md"
+description = "Lines labelled in the old black-and-white H2 line-scale overview plot."
+used_line_ids = [
+  "H2_Q1_0-0",
+  "H2_Q2_0-0",
+  "H2_Q4_0-0",
+  "H2_Q5_0-0",
+  "H2_Q7_0-0",
+  "H2_Q9_0-0",
+  "H2_Q11_0-0",
+  "H2_Q1_1-1",
+  "H2_Q3_1-1",
+  "H2_Q7_1-1",
+  "H2_Q9_1-1",
+  "H2_Q1_2-2",
+  "H2_Q3_2-2",
+  "H2_Q4_2-2",
+  "H2_Q7_2-2",
+]
+
+[[policies]]
+line_id = "H2_Q3_0-0"
+decision = "deblend_reject"
+matrix_action = "zero"
+evidence = "Old notebook fits target near 603.18 nm plus blue-side contaminant near 603.145 nm; downstream matrix stores zero."
+fit_hint = "two_component_blue_contaminant"
+
+[[policies]]
+line_id = "H2_Q5_1-1"
+decision = "reject"
+matrix_action = "zero"
+evidence = "Intensity comments say 'too big?' and 'blended? (too big)'; matrices store zero."
+fit_hint = "do_not_reinstate_without_review"
+
+[[policies]]
+line_id = "H2_Q6_0-0"
+decision = "reject"
+matrix_action = "zero"
+evidence = "Text files preserve a fitted value but mark it 'blended'; matrix stores zero."
+fit_hint = "two_component_blue_contaminant"
+
+[[policies]]
+line_id = "H2_Q7_0-0"
+decision = "deblend_accept"
+matrix_action = "keep"
+evidence = "Old three-Gaussian fit reports the central target near 609.025 nm with left/right contaminants."
+fit_hint = "three_component_central_target"
+
+[[policies]]
+line_id = "H2_Q9_1-1"
+decision = "blend_accept"
+matrix_action = "keep"
+evidence = "Old local fit clearly assigns the 623.73-623.74 nm component to Q9(1-1)."
+fit_hint = "paired_with_H2_Q3_2-2"
+
+[[policies]]
+line_id = "H2_Q3_2-2"
+decision = "blend_accept"
+matrix_action = "keep"
+evidence = "Old local fit clearly assigns the 623.83-623.84 nm component to Q3(2-2)."
+fit_hint = "paired_with_H2_Q9_1-1"
+
+[[policies]]
+line_id = "H2_Q4_2-2"
+decision = "suspicious"
+matrix_action = "keep"
+evidence = "Intensity/error comments preserve a '?' and the notebook used a hand baseline offset."
+fit_hint = "manual_baseline_question"
+
+[[policies]]
+line_id = "H2_Q9_0-0"
+decision = "accept_with_warning"
+matrix_action = "keep"
+evidence = "Matrix keeps the line, but one notebook fit printed Standard error = None."
+fit_hint = "check_uncertainty"
+
+[[policies]]
+line_id = "H2_Q11_2-2"
+decision = "reject"
+matrix_action = "zero"
+evidence = "Single-Gaussian attempt was unstable with very large relative error; matrix stores zero and nearby structure appears on both sides."
+fit_hint = "left_and_right_contamination"

@@ -259,6 +259,97 @@ def test_close_database_neighbours_fit_as_blend_group():
     assert by_id[line_a.line_id].blend_delta_nm == by_id[line_b.line_id].blend_delta_nm
 
 
+def test_legacy_policy_zeroes_rejected_line_for_matrix_export():
+    import numpy as np
+
+    from fulcher_extractor.extract import extract_lines
+    from fulcher_extractor.fit import FitConfig
+    from fulcher_extractor.line_database import FulcherLine
+    from fulcher_extractor.line_models import gaussian_area_model
+    from fulcher_extractor.output import results_to_dataframe, results_to_matrices
+    from fulcher_extractor.spectrocube_io import Spectrum
+
+    line = FulcherLine("H2", "Q", 1, 1, "1-1", 5, 615.9565, "synthetic", "nm")
+    wavelength = np.linspace(615.75, 616.15, 401)
+    intensity = 1.0 + gaussian_area_model(wavelength, 0.13, line.wavelength_nm, 0.0273)
+    spectrum = Spectrum(
+        source_path=__file__,
+        shot_id="synthetic",
+        selectors={"frame": 0},
+        wavelength_nm=wavelength,
+        intensity=intensity,
+        intensity_units="a.u.",
+        wavelength_medium="air",
+        metadata={},
+    )
+
+    result = extract_lines(
+        spectrum,
+        lines=[line],
+        wavelength_min_nm=615.0,
+        wavelength_max_nm=616.5,
+        config=FitConfig(instrument_sigma_nm=0.0273, instrument_sigma_leeway_nm=0.005),
+    )[0]
+    report = results_to_dataframe([result])
+    intensity_matrix, error_matrix = results_to_matrices([result])
+
+    assert result.success
+    assert result.amplitude > 0.12
+    assert result.legacy_policy == "reject"
+    assert result.legacy_matrix_action == "zero"
+    assert "too big" in result.legacy_evidence
+    assert "legacy_zeroed" in result.status
+    assert report.loc[0, "amplitude"] > 0.12
+    assert report.loc[0, "matrix_amplitude"] == 0.0
+    assert intensity_matrix.loc[5, "1-1"] == 0.0
+    assert error_matrix.loc[5, "1-1"] == 0.0
+
+
+def test_legacy_policy_marks_accepted_blend_components():
+    import numpy as np
+
+    from fulcher_extractor.extract import extract_lines
+    from fulcher_extractor.fit import FitConfig
+    from fulcher_extractor.line_database import FulcherLine
+    from fulcher_extractor.line_models import gaussian_area_model
+    from fulcher_extractor.spectrocube_io import Spectrum
+
+    line_a = FulcherLine("H2", "Q", 1, 1, "1-1", 9, 623.7457, "synthetic", "nm")
+    line_b = FulcherLine("H2", "Q", 2, 2, "2-2", 3, 623.8391, "synthetic", "nm")
+    wavelength = np.linspace(623.55, 624.05, 501)
+    intensity = 1.0
+    intensity += gaussian_area_model(wavelength, 0.08, line_a.wavelength_nm, 0.0273)
+    intensity += gaussian_area_model(wavelength, 0.03, line_b.wavelength_nm, 0.0273)
+    spectrum = Spectrum(
+        source_path=__file__,
+        shot_id="synthetic",
+        selectors={"frame": 0},
+        wavelength_nm=wavelength,
+        intensity=intensity,
+        intensity_units="a.u.",
+        wavelength_medium="air",
+        metadata={},
+    )
+
+    results = extract_lines(
+        spectrum,
+        lines=[line_a, line_b],
+        wavelength_min_nm=623.0,
+        wavelength_max_nm=624.0,
+        config=FitConfig(
+            instrument_sigma_nm=0.0273,
+            instrument_sigma_leeway_nm=0.005,
+            close_neighbor_threshold_nm=0.10,
+        ),
+    )
+
+    assert {result.legacy_policy for result in results} == {"blend_accept"}
+    assert {result.legacy_matrix_action for result in results} == {"keep"}
+    assert all(result.legacy_line_scale_role == "used" for result in results)
+    assert all(result.matrix_amplitude == result.amplitude for result in results)
+    assert all("legacy_blend_accept" in result.status for result in results)
+
+
 def test_archaeology_backed_output_matrix_convention():
     from fulcher_extractor.fit import LineFitResult
     from fulcher_extractor.output import results_to_matrices

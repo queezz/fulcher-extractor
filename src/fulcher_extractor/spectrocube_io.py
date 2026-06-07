@@ -58,6 +58,12 @@ def open_spectrocube(path: str | Path, *, engine: str | None = None) -> xr.Datas
     """Open a SpectroCube dataset eagerly and validate required fields."""
     try:
         ds = xr.load_dataset(path, engine=engine)
+    except ImportError as exc:
+        raise RuntimeError(
+            "xarray could not open this SpectroCube because a NetCDF backend "
+            "dependency is missing. For NetCDF4/HDF5 cubes, install h5py for "
+            "the h5netcdf backend or install netCDF4."
+        ) from exc
     except ValueError as exc:
         if "IO backends" in str(exc) or "found the following matches" in str(exc):
             raise RuntimeError(

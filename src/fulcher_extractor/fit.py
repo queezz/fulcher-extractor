@@ -72,6 +72,13 @@ class LineFitResult:
     blend_component_count: int = 1
     close_neighbor_ids: str = ""
     blend_delta_nm: float = float("nan")
+    legacy_policy: str = ""
+    legacy_matrix_action: str = ""
+    legacy_evidence: str = ""
+    legacy_fit_hint: str = ""
+    legacy_line_scale_role: str = ""
+    matrix_amplitude: float = float("nan")
+    matrix_amplitude_stderr: float = float("nan")
 
     @property
     def relative_error(self) -> float:

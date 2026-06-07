@@ -6,6 +6,7 @@ import numpy as np
 
 from .fit import FitConfig, LineFitResult, fit_line_group, group_close_lines
 from .line_database import FulcherLine, filter_lines, load_lines
+from .line_policy import apply_line_policies, load_line_policies
 from .spectrocube_io import Spectrum
 
 
@@ -38,4 +39,4 @@ def extract_lines(
     results: list[LineFitResult] = []
     for group in group_close_lines(selected, threshold):
         results.extend(fit_line_group(spectrum, group, config=cfg))
-    return results
+    return apply_line_policies(results, policies=load_line_policies())

@@ -18,6 +18,7 @@ dependencies = [
   "matplotlib",
   "xarray",
   "h5netcdf",
+  "h5py",
   "tomli; python_version < '3.11'",
 ]
 
