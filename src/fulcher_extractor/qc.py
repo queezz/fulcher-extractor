@@ -110,15 +110,7 @@ def plot_line_fit(
 
     component_specs = components
     if component_specs is None and result.success:
-        component_specs = [
-            {
-                "label": result.line_id,
-                "amplitude": result.amplitude,
-                "center_nm": result.center_nm,
-                "sigma_nm": result.sigma_nm,
-                "rest_wavelength_nm": result.rest_wavelength_nm,
-            }
-        ]
+        component_specs = _components_from_result(result)
     component_specs = component_specs or []
 
     x_model = np.linspace(result.window_min_nm, result.window_max_nm, 500)
@@ -350,7 +342,11 @@ def _line_fit_groups(results: list[LineFitResult]) -> list[_LineFitGroup]:
         groups.append(
             _LineFitGroup(
                 reference=reference,
-                components=[_component_from_result(result) for result in ordered],
+                components=[
+                    component
+                    for result in ordered
+                    for component in _components_from_result(result)
+                ],
             )
         )
     return sorted(groups, key=lambda item: item.reference.window_min_nm)
@@ -364,6 +360,44 @@ def _component_from_result(result: LineFitResult) -> FitComponentSpec:
         "sigma_nm": result.sigma_nm,
         "rest_wavelength_nm": result.rest_wavelength_nm,
     }
+
+
+def _components_from_result(result: LineFitResult) -> list[FitComponentSpec]:
+    components = [_component_from_result(result)]
+    labels = _split_component_field(result.contaminant_labels)
+    amplitudes = _split_float_field(result.contaminant_amplitudes)
+    centers = _split_float_field(result.contaminant_centers_nm)
+    sigmas = _split_float_field(result.contaminant_sigmas_nm)
+    for idx, label in enumerate(labels):
+        if idx >= len(amplitudes) or idx >= len(centers) or idx >= len(sigmas):
+            continue
+        components.append(
+            {
+                "label": label,
+                "display_label": label.replace("_", " "),
+                "role": "contaminant",
+                "amplitude": amplitudes[idx],
+                "center_nm": centers[idx],
+                "sigma_nm": sigmas[idx],
+            }
+        )
+    return components
+
+
+def _split_component_field(value: str) -> list[str]:
+    return [part for part in str(value or "").split(",") if part]
+
+
+def _split_float_field(value: str) -> list[float]:
+    floats = []
+    for part in str(value or "").split(","):
+        if not part:
+            continue
+        try:
+            floats.append(float(part))
+        except ValueError:
+            floats.append(float("nan"))
+    return floats
 
 
 def _safe_line_group_name(result: LineFitResult) -> str:
@@ -796,6 +830,8 @@ def _plot_fit_note(ax, result: LineFitResult) -> None:
     ]
     if result.blend_component_count > 1:
         lines.insert(1, f"blend: {result.blend_component_count} components")
+    if result.contaminant_component_count:
+        lines.insert(1, f"contaminants: {result.contaminant_component_count}")
     if "unresolved_coincident_database_lines" in result.status:
         lines.insert(1, "unresolved: no spectral split")
     if result.legacy_policy:

@@ -79,6 +79,11 @@ class LineFitResult:
     legacy_line_scale_role: str = ""
     matrix_amplitude: float = float("nan")
     matrix_amplitude_stderr: float = float("nan")
+    contaminant_component_count: int = 0
+    contaminant_labels: str = ""
+    contaminant_amplitudes: str = ""
+    contaminant_centers_nm: str = ""
+    contaminant_sigmas_nm: str = ""
 
     @property
     def relative_error(self) -> float:
@@ -94,6 +99,16 @@ class InstrumentWidthEstimate:
     n_lines: int
     sigma_q10_nm: float
     sigma_q90_nm: float
+
+
+@dataclass(frozen=True)
+class ContaminantSpec:
+    """One non-database contaminant component in a decontaminating line fit."""
+
+    label: str
+    initial_offset_nm: float
+    lower_offset_nm: float
+    upper_offset_nm: float
 
 
 def _finite_window(wavelength_nm: np.ndarray, intensity: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -261,6 +276,176 @@ def fit_line_group(
             )
         )
     return results
+
+
+def fit_line_with_contaminants(
+    spectrum: Spectrum,
+    line: FulcherLine,
+    contaminants: list[ContaminantSpec],
+    *,
+    config: FitConfig | None = None,
+) -> LineFitResult:
+    """Fit one target line together with explicit non-database contaminants."""
+    if not contaminants:
+        return fit_single_line(spectrum, line, config=config)
+
+    cfg = config or FitConfig()
+    expected_center = line.wavelength_nm + cfg.global_dx_nm
+    line_left, line_right = _line_window_widths(cfg)
+    center_left, center_right = _center_offsets(cfg)
+    line_min = min(
+        [expected_center - line_left]
+        + [expected_center + spec.lower_offset_nm - line_left for spec in contaminants]
+    )
+    line_max = max(
+        [expected_center + line_right]
+        + [expected_center + spec.upper_offset_nm + line_right for spec in contaminants]
+    )
+    background_min = expected_center - cfg.background_half_width_nm
+    background_max = expected_center + cfg.background_half_width_nm
+    background_window = spectrum.window(background_min, background_max)
+    _, background_y = _finite_window(
+        background_window.wavelength_nm, background_window.intensity
+    )
+    background_stats = _background_stats(background_y)
+    window = spectrum.window(line_min, line_max)
+    x, y_raw = _finite_window(window.wavelength_nm, window.intensity)
+
+    component_count = 1 + len(contaminants)
+    contaminant_labels = ",".join(spec.label for spec in contaminants)
+    group_id = f"{line.line_id}+{contaminant_labels}"
+    if x.size < 5:
+        return _failed_result(
+            line,
+            cfg,
+            line_min,
+            line_max,
+            background_min,
+            background_max,
+            "too_few_points;decontaminated",
+            background_stats,
+            blend_group_id=group_id,
+            blend_component_count=component_count,
+            close_neighbor_ids=contaminant_labels,
+        )
+
+    if cfg.baseline_strategy != "local_minimum":
+        raise ValueError(f"Unsupported baseline strategy: {cfg.baseline_strategy!r}")
+    baseline = local_minimum_baseline(y_raw)
+    y = y_raw - baseline
+    sigma_min, sigma_max, sigma_initial = _sigma_bounds(cfg)
+    target_lower = expected_center - center_left
+    target_upper = expected_center + center_right
+
+    total_area = max(
+        float(np.trapezoid(np.clip(y, 0.0, None), x)),
+        float(np.nanmax(y)) * sigma_initial * np.sqrt(2.0 * np.pi),
+        np.finfo(float).eps,
+    )
+    contaminant_initial_area = total_area * 0.12
+    target_initial_area = max(
+        total_area - contaminant_initial_area * len(contaminants),
+        total_area * 0.2,
+    )
+    p0 = [target_initial_area]
+    p0.extend([contaminant_initial_area] * len(contaminants))
+    p0.append(expected_center)
+    p0.extend(expected_center + spec.initial_offset_nm for spec in contaminants)
+    p0.append(sigma_initial)
+
+    lower = [0.0] * component_count
+    lower.append(target_lower)
+    lower.extend(expected_center + spec.lower_offset_nm for spec in contaminants)
+    lower.append(sigma_min)
+    upper = [np.inf] * component_count
+    upper.append(target_upper)
+    upper.extend(expected_center + spec.upper_offset_nm for spec in contaminants)
+    upper.append(sigma_max)
+
+    try:
+        popt, pcov = curve_fit(
+            lambda wavelengths, *params: _independent_component_model(
+                wavelengths, component_count, params
+            ),
+            x,
+            y,
+            p0=p0,
+            bounds=(lower, upper),
+            maxfev=60000,
+        )
+        y_fit = _independent_component_model(x, component_count, popt)
+        residual = y - y_fit
+        perr = np.sqrt(np.diag(pcov)) if pcov.size else np.full(len(popt), np.nan)
+        status = "ok;decontaminated;contaminant_components"
+        success = True
+        sigma = float(popt[-1])
+        if abs(sigma - sigma_max) <= 1e-8:
+            status = f"{status};sigma_at_upper_bound"
+        if abs(sigma - sigma_min) <= 1e-8:
+            status = f"{status};sigma_at_lower_bound"
+        target_center = float(popt[component_count])
+        if abs(target_center - target_lower) <= 1e-8:
+            status = f"{status};center_at_lower_bound"
+        if abs(target_center - target_upper) <= 1e-8:
+            status = f"{status};center_at_upper_bound"
+    except Exception as exc:
+        popt = np.full(2 * component_count + 1, np.nan)
+        perr = np.full(2 * component_count + 1, np.nan)
+        residual = np.full_like(y, np.nan)
+        status = f"fit_failed:{type(exc).__name__};decontaminated"
+        success = False
+
+    sigma = float(popt[-1]) if np.isfinite(popt[-1]) else float("nan")
+    target_center = float(popt[component_count])
+    contaminant_areas = [float(value) for value in popt[1:component_count]]
+    contaminant_centers = [
+        float(value) for value in popt[component_count + 1 : 2 * component_count]
+    ]
+    return LineFitResult(
+        line_id=line.line_id,
+        isotopologue=line.isotopologue,
+        branch=line.branch,
+        band=line.band,
+        N=line.N,
+        rest_wavelength_nm=line.wavelength_nm,
+        amplitude=float(popt[0]),
+        amplitude_stderr=float(perr[0]),
+        center_nm=target_center,
+        center_stderr_nm=float(perr[component_count]),
+        sigma_nm=sigma,
+        sigma_stderr_nm=float(perr[-1]),
+        fwhm_nm=float(2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma),
+        baseline_offset=float(baseline),
+        baseline_strategy=cfg.baseline_strategy,
+        window_min_nm=line_min,
+        window_max_nm=line_max,
+        background_min_nm=background_min,
+        background_max_nm=background_max,
+        n_points=int(x.size),
+        residual_rms=float(np.sqrt(np.nanmean(residual**2))),
+        success=success,
+        status=status,
+        background_min_intensity=background_stats[0],
+        background_median_intensity=background_stats[1],
+        background_max_intensity=background_stats[2],
+        global_dx_nm=cfg.global_dx_nm,
+        expected_center_nm=expected_center,
+        center_offset_from_rest_nm=float(target_center - line.wavelength_nm),
+        center_offset_from_expected_nm=float(target_center - expected_center),
+        sigma_lower_bound_nm=sigma_min,
+        sigma_upper_bound_nm=sigma_max,
+        center_lower_bound_nm=target_lower,
+        center_upper_bound_nm=target_upper,
+        blend_group_id=group_id,
+        blend_component_count=component_count,
+        close_neighbor_ids=contaminant_labels,
+        blend_delta_nm=float("nan"),
+        contaminant_component_count=len(contaminants),
+        contaminant_labels=contaminant_labels,
+        contaminant_amplitudes=_join_floats(contaminant_areas),
+        contaminant_centers_nm=_join_floats(contaminant_centers),
+        contaminant_sigmas_nm=_join_floats([sigma] * len(contaminants)),
+    )
 
 
 def group_close_lines(
@@ -455,6 +640,24 @@ def _blend_model(
     for area, center in zip(areas, centers):
         y += gaussian_area_model(wavelength_nm, float(area), float(center), float(sigma))
     return y
+
+
+def _independent_component_model(
+    wavelength_nm: np.ndarray,
+    component_count: int,
+    params,
+) -> np.ndarray:
+    areas = params[:component_count]
+    centers = params[component_count : 2 * component_count]
+    sigma = params[-1]
+    y = np.zeros_like(wavelength_nm, dtype=float)
+    for area, center in zip(areas, centers):
+        y += gaussian_area_model(wavelength_nm, float(area), float(center), float(sigma))
+    return y
+
+
+def _join_floats(values: Iterable[float]) -> str:
+    return ",".join("" if not np.isfinite(value) else f"{value:.10g}" for value in values)
 
 
 def _relative_band_weights(lines: list[FulcherLine]) -> np.ndarray:
