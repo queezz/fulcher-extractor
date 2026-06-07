@@ -22,6 +22,13 @@ used_line_ids = [
   "H2_Q7_2-2",
 ]
 
+[overview_qc]
+trusted_decontaminated_line_ids = [
+  "H2_Q3_0-0",
+  "H2_Q6_1-1",
+  "H2_Q2_2-2",
+]
+
 [[policies]]
 line_id = "H2_Q3_0-0"
 decision = "deblend_reject"

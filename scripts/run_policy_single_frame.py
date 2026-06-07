@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from fulcher_extractor.extract import extract_lines
 from fulcher_extractor.fit import FitConfig
 from fulcher_extractor.line_database import load_lines
-from fulcher_extractor.line_policy import load_line_policies
+from fulcher_extractor.line_policy import load_line_policy_set, overview_qc_lines
 from fulcher_extractor.output import results_to_dataframe, write_fulcheranalyzer_csvs
 from fulcher_extractor.qc import plot_region, write_line_fit_qc
 from fulcher_extractor.spectrocube_io import load_spectrum
@@ -39,13 +39,8 @@ def main() -> None:
     cube_path = args.cube_dir / f"{args.shot}_Echelle_spectrocube_wmsr_403nm.nc"
     spectrum = load_spectrum(cube_path, frame=args.frame, engine=args.engine)
     lines = load_lines()
-    policies = load_line_policies()
-    used_line_ids = {
-        line_id
-        for line_id, policy in policies.items()
-        if policy.line_scale_role == "used"
-    }
-    label_lines = [line for line in lines if line.line_id in used_line_ids]
+    policy_set = load_line_policy_set()
+    label_lines = overview_qc_lines(lines, policy_set=policy_set)
 
     config = FitConfig(
         line_left_width_nm=0.24,

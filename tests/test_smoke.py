@@ -350,6 +350,17 @@ def test_legacy_policy_marks_accepted_blend_components():
     assert all("legacy_blend_accept" in result.status for result in results)
 
 
+def test_overview_qc_lines_include_trusted_decontaminated_lines():
+    from fulcher_extractor.line_database import load_lines
+    from fulcher_extractor.line_policy import overview_qc_lines
+
+    labels = {line.line_id for line in overview_qc_lines(load_lines())}
+
+    assert {"H2_Q3_0-0", "H2_Q6_1-1", "H2_Q2_2-2"}.issubset(labels)
+    assert "H2_Q7_0-0" in labels
+    assert "H2_Q4_1-1" not in labels
+
+
 def test_q7_00_decontamination_keeps_target_area_for_matrix_export():
     import numpy as np
 

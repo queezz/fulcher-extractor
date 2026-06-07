@@ -32,16 +32,46 @@ class LinePolicy:
     line_scale_role: str = ""
 
 
+@dataclass(frozen=True)
+class LinePolicySet:
+    """Loaded policy hints plus display-only QC selections."""
+
+    policies: dict[str, LinePolicy]
+    overview_qc_line_ids: frozenset[str]
+
+
+def load_line_policy_set(path: str | Path | None = None) -> LinePolicySet:
+    """Load recovered policy hints and display-only QC line selections."""
+    payload = _load_policy_payload(path)
+    policies, used_line_ids = _policies_from_payload(payload)
+    overview_qc_line_ids = set(used_line_ids)
+    overview_qc_line_ids.update(
+        str(line_id)
+        for line_id in payload.get("overview_qc", {}).get(
+            "trusted_decontaminated_line_ids", []
+        )
+    )
+    return LinePolicySet(
+        policies=policies,
+        overview_qc_line_ids=frozenset(overview_qc_line_ids),
+    )
+
+
 def load_line_policies(path: str | Path | None = None) -> dict[str, LinePolicy]:
     """Load recovered H2 line decisions keyed by line id."""
+    return load_line_policy_set(path).policies
+
+
+def _load_policy_payload(path: str | Path | None = None) -> dict:
     if path is None:
-        payload = tomllib.loads(
+        return tomllib.loads(
             files(RESOURCE_PACKAGE).joinpath(DEFAULT_POLICY_RESOURCE).read_text()
         )
-    else:
-        with Path(path).open("rb") as f:
-            payload = tomllib.load(f)
+    with Path(path).open("rb") as f:
+        return tomllib.load(f)
 
+
+def _policies_from_payload(payload: dict) -> tuple[dict[str, LinePolicy], set[str]]:
     used_line_ids: set[str] = set()
     line_scale_source = ""
     for section in payload.get("line_scale", {}).values():
@@ -72,7 +102,17 @@ def load_line_policies(path: str | Path | None = None) -> dict[str, LinePolicy]:
             source=line_scale_source,
             line_scale_role="used",
         )
-    return policies
+    return policies, used_line_ids
+
+
+def overview_qc_lines(
+    lines: Iterable[FulcherLine],
+    *,
+    policy_set: LinePolicySet | None = None,
+) -> list[FulcherLine]:
+    """Return lines to label and guide as useful in the overview QC plot."""
+    selected = policy_set or load_line_policy_set()
+    return [line for line in lines if line.line_id in selected.overview_qc_line_ids]
 
 
 def apply_line_policies(
