@@ -405,6 +405,60 @@ def test_q7_00_decontamination_keeps_target_area_for_matrix_export():
     )
 
 
+def test_q6_11_decontamination_uses_blue_and_red_neighbours():
+    import numpy as np
+
+    from fulcher_extractor.extract import extract_lines
+    from fulcher_extractor.fit import FitConfig
+    from fulcher_extractor.line_database import FulcherLine
+    from fulcher_extractor.line_models import gaussian_area_model
+    from fulcher_extractor.output import results_to_matrices
+    from fulcher_extractor.spectrocube_io import Spectrum
+
+    sigma = 0.0273
+    target = FulcherLine("H2", "Q", 1, 1, "1-1", 6, 617.5462, "synthetic", "nm")
+    wavelength = np.linspace(617.25, 617.80, 551)
+    intensity = 1.0
+    intensity += gaussian_area_model(wavelength, 0.032, target.wavelength_nm + 0.010, sigma)
+    intensity += gaussian_area_model(wavelength, 0.018, target.wavelength_nm - 0.145, sigma)
+    intensity += gaussian_area_model(wavelength, 0.021, target.wavelength_nm - 0.077, sigma)
+    intensity += gaussian_area_model(wavelength, 0.017, target.wavelength_nm + 0.097, sigma)
+    spectrum = Spectrum(
+        source_path=__file__,
+        shot_id="synthetic",
+        selectors={"frame": 0},
+        wavelength_nm=wavelength,
+        intensity=intensity,
+        intensity_units="a.u.",
+        wavelength_medium="air",
+        metadata={},
+    )
+
+    result = extract_lines(
+        spectrum,
+        lines=[target],
+        wavelength_min_nm=617.0,
+        wavelength_max_nm=618.0,
+        config=FitConfig(
+            instrument_sigma_nm=sigma,
+            instrument_sigma_leeway_nm=0.005,
+            close_neighbor_threshold_nm=0.10,
+        ),
+    )[0]
+    intensity_matrix, _ = results_to_matrices([result])
+
+    assert result.success
+    assert "decontaminated" in result.status
+    assert "sigma_at_upper_bound" not in result.status
+    assert result.contaminant_component_count == 3
+    assert result.contaminant_labels == "blue_neighbor_1,blue_neighbor_2,red_neighbor"
+    assert result.blend_component_count == 4
+    assert abs(result.amplitude - 0.032) < 0.004
+    assert abs(result.sigma_nm - sigma) < 0.002
+    assert result.matrix_amplitude == result.amplitude
+    assert intensity_matrix.loc[6, "1-1"] == result.amplitude
+
+
 def test_archaeology_backed_output_matrix_convention():
     from fulcher_extractor.fit import LineFitResult
     from fulcher_extractor.output import results_to_matrices

@@ -44,7 +44,30 @@ DEFAULT_DECONTAMINATION_RULES = {
                 upper_offset_nm=0.12,
             ),
         ),
-    )
+    ),
+    "H2_Q6_1-1": DecontaminationRule(
+        line_id="H2_Q6_1-1",
+        contaminants=(
+            ContaminantSpec(
+                label="blue_neighbor_1",
+                initial_offset_nm=-0.145,
+                lower_offset_nm=-0.18,
+                upper_offset_nm=-0.105,
+            ),
+            ContaminantSpec(
+                label="blue_neighbor_2",
+                initial_offset_nm=-0.075,
+                lower_offset_nm=-0.105,
+                upper_offset_nm=-0.040,
+            ),
+            ContaminantSpec(
+                label="red_neighbor",
+                initial_offset_nm=0.100,
+                lower_offset_nm=0.060,
+                upper_offset_nm=0.130,
+            ),
+        ),
+    ),
 }
 
 
