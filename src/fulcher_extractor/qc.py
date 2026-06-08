@@ -772,7 +772,7 @@ def _plot_region_guides(
             wavelength,
             color=band_color(line.band),
             lw=1.0,
-            alpha=0.32,
+            alpha=1.0,
             zorder=0,
         )
 

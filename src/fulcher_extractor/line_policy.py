@@ -30,6 +30,8 @@ class LinePolicy:
     fit_hint: str = ""
     source: str = ""
     line_scale_role: str = ""
+    boltzmann_fit_action: str = "fit"
+    boltzmann_fit_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,8 @@ def _policies_from_payload(payload: dict) -> tuple[dict[str, LinePolicy], set[st
             fit_hint=str(row.get("fit_hint", "")),
             source=str(row.get("source", "")),
             line_scale_role="used" if line_id in used_line_ids else "",
+            boltzmann_fit_action=str(row.get("boltzmann_fit_action", "fit")),
+            boltzmann_fit_reason=str(row.get("boltzmann_fit_reason", "")),
         )
 
     for line_id in used_line_ids:
@@ -101,6 +105,8 @@ def _policies_from_payload(payload: dict) -> tuple[dict[str, LinePolicy], set[st
             evidence="Labelled as used in the old H2 line-scale overview plot.",
             source=line_scale_source,
             line_scale_role="used",
+            boltzmann_fit_action="fit",
+            boltzmann_fit_reason="",
         )
     return policies, used_line_ids
 
@@ -151,6 +157,8 @@ def _apply_policy(result: LineFitResult, policy: LinePolicy | None) -> LineFitRe
         matrix_stderr = 0.0
         status = f"{status};legacy_zeroed"
     status = f"{status};legacy_{policy.decision}"
+    if policy.boltzmann_fit_action == "exclude":
+        status = f"{status};boltzmann_excluded"
     return replace(
         result,
         status=status,
@@ -159,6 +167,8 @@ def _apply_policy(result: LineFitResult, policy: LinePolicy | None) -> LineFitRe
         legacy_evidence=policy.evidence,
         legacy_fit_hint=policy.fit_hint,
         legacy_line_scale_role=policy.line_scale_role,
+        boltzmann_fit_action=policy.boltzmann_fit_action,
+        boltzmann_fit_reason=policy.boltzmann_fit_reason,
         matrix_amplitude=matrix_amplitude,
         matrix_amplitude_stderr=matrix_stderr,
     )

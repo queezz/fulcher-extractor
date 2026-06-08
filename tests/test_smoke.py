@@ -350,6 +350,52 @@ def test_legacy_policy_marks_accepted_blend_components():
     assert all("legacy_blend_accept" in result.status for result in results)
 
 
+def test_boltzmann_policy_excludes_wide_line_without_zeroing_matrix():
+    import numpy as np
+
+    from fulcher_extractor.extract import extract_lines
+    from fulcher_extractor.fit import FitConfig
+    from fulcher_extractor.line_database import FulcherLine
+    from fulcher_extractor.line_models import gaussian_area_model
+    from fulcher_extractor.output import results_to_dataframe, results_to_matrices
+    from fulcher_extractor.spectrocube_io import Spectrum
+
+    line = FulcherLine("H2", "Q", 1, 1, "1-1", 2, 612.7246, "synthetic", "nm")
+    wavelength = np.linspace(612.50, 612.95, 451)
+    intensity = 1.0 + gaussian_area_model(wavelength, 0.08, line.wavelength_nm, 0.037)
+    spectrum = Spectrum(
+        source_path=__file__,
+        shot_id="synthetic",
+        selectors={"frame": 0},
+        wavelength_nm=wavelength,
+        intensity=intensity,
+        intensity_units="a.u.",
+        wavelength_medium="air",
+        metadata={},
+    )
+
+    result = extract_lines(
+        spectrum,
+        lines=[line],
+        wavelength_min_nm=612.0,
+        wavelength_max_nm=613.5,
+        config=FitConfig(instrument_sigma_nm=0.0273, instrument_sigma_leeway_nm=0.015),
+    )[0]
+    report = results_to_dataframe([result])
+    intensity_matrix, error_matrix = results_to_matrices([result])
+
+    assert result.success
+    assert result.legacy_policy == "wide_peak_suspected_contamination"
+    assert result.legacy_matrix_action == "keep"
+    assert result.boltzmann_fit_action == "exclude"
+    assert "wide" in result.boltzmann_fit_reason
+    assert "boltzmann_excluded" in result.status
+    assert report.loc[0, "boltzmann_fit_action"] == "exclude"
+    assert intensity_matrix.loc[2, "1-1"] == result.matrix_amplitude
+    assert intensity_matrix.loc[2, "1-1"] > 0.0
+    assert error_matrix.loc[2, "1-1"] > 0.0
+
+
 def test_overview_qc_lines_include_trusted_decontaminated_lines():
     from fulcher_extractor.line_database import load_lines
     from fulcher_extractor.line_policy import overview_qc_lines

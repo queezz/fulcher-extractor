@@ -77,6 +77,8 @@ class LineFitResult:
     legacy_evidence: str = ""
     legacy_fit_hint: str = ""
     legacy_line_scale_role: str = ""
+    boltzmann_fit_action: str = "fit"
+    boltzmann_fit_reason: str = ""
     matrix_amplitude: float = float("nan")
     matrix_amplitude_stderr: float = float("nan")
     contaminant_component_count: int = 0

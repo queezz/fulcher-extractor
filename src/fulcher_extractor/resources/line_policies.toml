@@ -44,6 +44,15 @@ evidence = "Intensity comments say 'too big?' and 'blended? (too big)'; matrices
 fit_hint = "do_not_reinstate_without_review"
 
 [[policies]]
+line_id = "H2_Q2_1-1"
+decision = "wide_peak_suspected_contamination"
+matrix_action = "keep"
+evidence = "QC inspection of shot 193809 frame 9 shows Q2(1-1) is visibly wider than neighboring clean Fulcher lines, suggesting unresolved contamination."
+fit_hint = "exclude_from_boltzmann_until_decontaminated"
+boltzmann_fit_action = "exclude"
+boltzmann_fit_reason = "Peak is visibly too wide compared with clean Fulcher lines; suspected unresolved contamination."
+
+[[policies]]
 line_id = "H2_Q6_0-0"
 decision = "reject"
 matrix_action = "zero"
