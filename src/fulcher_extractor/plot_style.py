@@ -8,17 +8,21 @@ from typing import Iterator
 import matplotlib.pyplot as plt
 
 BAND_COLORS = {
-    "0-0": "#d55e00",
-    "1-1": "#009e73",
-    "2-2": "#e6ab02",
-    "3-3": "#cc79a7",
+    "0-0": "#2f6fbb",
+    "1-1": "#c24f2f",
+    "2-2": "#2f8f5b",
 }
 
-COMPONENT_COLORS = {
-    "0-0": "#d55e00",
-    "1-1": "#009e73",
-    "2-2": "#0072b2",
-    "3-3": "#cc79a7",
+BAND_MARKERS = {
+    "0-0": "s",
+    "1-1": "o",
+    "2-2": "D",
+}
+
+BAND_LINESTYLES = {
+    "0-0": "-",
+    "1-1": "--",
+    "2-2": "-.",
 }
 
 FIT_SUM_COLOR = "#b2182b"
@@ -48,8 +52,17 @@ def fulcher_qc_style() -> Iterator[None]:
 
 def band_color(band: str, *, component: bool = False) -> str:
     """Return a stable color for a diagonal Fulcher band."""
-    palette = COMPONENT_COLORS if component else BAND_COLORS
-    return palette.get(band, "0.4")
+    return BAND_COLORS.get(band, "0.4")
+
+
+def band_marker(band: str) -> str:
+    """Return the legacy marker shape for a diagonal Fulcher band."""
+    return BAND_MARKERS.get(band, "o")
+
+
+def band_linestyle(band: str) -> str:
+    """Return a stable line style for plotted band fits."""
+    return BAND_LINESTYLES.get(band, "-")
 
 
 def compact_line_label(line_id: str) -> str:

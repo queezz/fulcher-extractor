@@ -16,6 +16,7 @@ from .plot_style import (
     BASELINE_COLOR,
     FIT_SUM_COLOR,
     band_color,
+    band_linestyle,
     compact_line_label,
     fulcher_qc_style,
     set_inward_ticks,
@@ -26,7 +27,6 @@ LINE_COLORS = {
     "0-0": band_color("0-0", component=True),
     "1-1": band_color("1-1", component=True),
     "2-2": band_color("2-2", component=True),
-    "3-3": band_color("3-3", component=True),
 }
 
 FitComponentSpec = dict[str, float | str]
@@ -173,7 +173,7 @@ def plot_line_fit(
             color = _component_color(spec, label)
             is_target = label == result.line_id
             is_contaminant = _is_contaminant_component(spec)
-            ls = "-" if is_target else "--"
+            ls = "--" if is_contaminant else _component_linestyle(label)
             ax.plot(
                 x_model,
                 result.baseline_offset + profile,
@@ -489,11 +489,12 @@ def _plot_line_fit_panel(
         )
         profiles.append(profile)
         is_target = label == result.line_id
+        is_contaminant = _is_contaminant_component(spec)
         ax.plot(
             x_model,
             result.baseline_offset + profile,
             lw=0.95 if is_target else 0.8,
-            ls="-" if is_target else "--",
+            ls="--" if is_contaminant else _component_linestyle(label),
             alpha=0.92,
             color=color,
         )
@@ -643,6 +644,13 @@ def _line_color_from_label(label: str) -> str:
     return "0.5"
 
 
+def _component_linestyle(label: str) -> str:
+    for band in LINE_COLORS:
+        if band in label:
+            return band_linestyle(band)
+    return "-"
+
+
 def _spectrum_label(spectrum: Spectrum) -> str:
     label = spectrum.shot_id or spectrum.source_path.stem
     selectors = _selector_label(spectrum)
@@ -764,7 +772,7 @@ def _plot_region_guides(
             wavelength,
             color=band_color(line.band),
             lw=1.0,
-            alpha=0.5,
+            alpha=0.32,
             zorder=0,
         )
 
