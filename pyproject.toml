@@ -28,6 +28,10 @@ dev = [
   "ipython",
   "ipykernel",
   "jupyter",
+  "tqdm",
+]
+progress = [
+  "tqdm",
 ]
 docs = [
   "mkdocs",
@@ -38,6 +42,7 @@ docs = [
 
 [project.scripts]
 fulcher-extract = "fulcher_extractor.cli:main"
+fulcher-h2-dataset = "fulcher_extractor.h2_dataset_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fulcher_extractor"]

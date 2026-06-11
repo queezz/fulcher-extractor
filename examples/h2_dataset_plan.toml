@@ -1,0 +1,23 @@
+[common]
+cube_glob = "C:/Users/queez/Dropbox/Experiments/2025-LHD-BH/Echelle/20250926-spectrocubes/*_spectrocube_wmsr_403nm.nc"
+shots_toml = "C:/Users/queez/Dropbox/10-Research/50-Conferences/2026-05-17-PSI/analysis/notebooks/shots.toml"
+shot_groups = ["rax36", "rax39"]
+engine = "h5netcdf"
+progress_every = 5
+max_fit_relerr = 1.0
+
+[scan]
+output_dir = "../local/runs/h2-dataset-20250926-rax36-rax39/scan"
+signal_min_nm = 600.0
+signal_max_nm = 630.0
+# Set this after inspecting frame_signal_scores.csv, or pass it on the CLI.
+# signal_threshold = 0.0
+# Optional hard cap for smoke tests or deliberately bounded datasets.
+# select_top = 350
+
+[run]
+manifest = "../local/runs/h2-dataset-20250926-rax36-rax39/scan/selected_frames.csv"
+output_dir = "../local/runs/h2-dataset-20250926-rax36-rax39/dataset"
+frames = "all"
+qc_every = 1
+line_fit_qc = true
