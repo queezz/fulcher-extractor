@@ -33,15 +33,25 @@ SpectroCube .nc
   -> Boltzmann/coronal analysis
 ```
 
+For batch SpectroCube runs, keep extraction and physics analysis as separate
+steps:
+
+```bash
+fulcher-h2-dataset --plan h2_dataset_plan.toml extract
+fulcher-analyze-batch --plan h2_dataset_plan.toml
+```
+
+The plan should include an `[analyze]` section for downstream analyzer paths.
+
 ## Development
 
 Use the Fulcher virtual environment explicitly. Future agents should run tests
 and scripts through this interpreter:
 
 ```bash
-/Users/queezz/.venvs/fulcher/bin/python -m pip install -e ".[dev,docs]"
-/Users/queezz/.venvs/fulcher/bin/python -m pytest
-/Users/queezz/.venvs/fulcher/bin/python -m mkdocs serve
+~/.venvs/fulcher/bin/python -m pip install -e ".[dev,docs]"
+~/.venvs/fulcher/bin/python -m pytest
+~/.venvs/fulcher/bin/python -m mkdocs serve
 ```
 
 Ignored local run outputs should use a date-time prefix:
