@@ -213,10 +213,13 @@ def _progress_updater(
     desc: str,
     every: int,
     enabled: bool = True,
+    suffix: str = "",
 ):
     """Return ``(update, close)`` for frame-level progress."""
     if not enabled:
         return lambda _index, _label="": None, lambda: None
+
+    base_desc = f"{desc} {suffix}".strip()
 
     if total:
         try:
@@ -226,17 +229,16 @@ def _progress_updater(
         else:
             bar = tqdm(
                 total=total,
-                desc=desc,
+                desc=base_desc,
                 unit="frame",
-                ncols=96,
-                ascii=True,
+                ncols=112,
                 dynamic_ncols=False,
-                bar_format="{desc}: {percentage:3.0f}%|{bar:14}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}",
+                bar_format="{desc:<42} {percentage:3.0f}%|{bar:14}| {n_fmt:>4}/{total_fmt:<4} [{elapsed}<{remaining}, {rate_fmt}]",
             )
 
             def update_tqdm(_index: int, label: str = "") -> None:
                 if label:
-                    bar.set_postfix_str(label, refresh=False)
+                    bar.set_description_str(f"{base_desc} | {_short_progress_label(label)}", refresh=False)
                 bar.update(1)
 
             return update_tqdm, bar.close
@@ -280,6 +282,13 @@ def _progress_updater(
             stream.flush()
 
     return update_text, close_text
+
+
+def _short_progress_label(label: str, width: int = 34) -> str:
+    text = " ".join(str(label).split())
+    if len(text) <= width:
+        return text
+    return f"...{text[-(width - 3):]}"
 
 
 def _cube_paths(cube_glob: str, max_cubes: int | None = None) -> list[Path]:
@@ -1129,13 +1138,14 @@ def extract_dataset(args: argparse.Namespace) -> None:
             break
 
     total_frames = len(tasks)
+    workers = _worker_count(args.workers)
     update_progress, close_progress = _progress_updater(
         total=total_frames,
         desc="extract frames",
         every=args.progress_every,
         enabled=not args.no_progress,
+        suffix=f"({workers} workers)" if workers > 1 else "",
     )
-    workers = _worker_count(args.workers)
     if args.line_fit_qc and workers > 1:
         for task in tasks:
             task["write_line_fit_qc"] = True
@@ -1170,7 +1180,6 @@ def extract_dataset(args: argparse.Namespace) -> None:
                 for pdf in open_pdfs.values():
                     pdf.close()
         else:
-            print(f"extract workers: {workers}", file=sys.stderr, flush=True)
             executor = concurrent.futures.ProcessPoolExecutor(max_workers=workers)
             try:
                 future_to_task = {executor.submit(_extract_frame_task, task): task for task in tasks}
