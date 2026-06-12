@@ -8,10 +8,10 @@ max_fit_relerr = 1.0
 
 [scan]
 output_dir = "../local/runs/h2-dataset-20250926-rax36-rax39/scan"
-signal_min_nm = 600.0
-signal_max_nm = 630.0
-# Set this after inspecting frame_signal_scores.csv, or pass it on the CLI.
-# signal_threshold = 0.0
+fulcher_min_nm = 600.0
+fulcher_max_nm = 630.0
+# Set this from scan_summary.md / scan_gate_summary.png, or pass it on the CLI.
+# scan_threshold = 0.0
 # Optional hard cap for smoke tests or deliberately bounded datasets.
 # select_top = 350
 

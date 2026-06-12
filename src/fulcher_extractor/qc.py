@@ -306,7 +306,8 @@ def write_line_fit_qc(
 
     if pdf_path is not None:
         pdf_output = Path(pdf_path)
-        plot_line_fit_page(spectrum, results, columns=columns, output_path=pdf_output)
+        fig = plot_line_fit_page(spectrum, results, columns=columns, output_path=pdf_output)
+        plt.close(fig)
         written.append(pdf_output)
 
     if save_individual_pngs:

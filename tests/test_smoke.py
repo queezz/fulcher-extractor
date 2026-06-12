@@ -115,6 +115,32 @@ def test_global_dx_recenters_fit_expectation():
     assert abs(result.center_offset_from_expected_nm) < 0.002
 
 
+def test_h2_scan_score_combines_fulcher_peaks_and_halpha():
+    import numpy as np
+
+    from fulcher_extractor.h2_dataset_cli import _score_scan_frame
+    from fulcher_extractor.line_models import gaussian_area_model
+
+    wavelength = np.linspace(598.0, 658.0, 3001)
+    baseline = 0.02 + 0.001 * np.sin(wavelength)
+    localized_fulcher = gaussian_area_model(wavelength, 0.010, 612.1787, 0.035)
+    halpha = gaussian_area_model(wavelength, 0.030, 656.28, 0.040)
+    spectrum = baseline + localized_fulcher + halpha
+
+    score = _score_scan_frame(
+        wavelength,
+        spectrum,
+        fulcher_min_nm=600.0,
+        fulcher_max_nm=630.0,
+    )
+
+    assert score["scan_score"] > score["fulcher_signal"]
+    assert score["fulcher_peak_count"] >= 1
+    assert score["fulcher_peak_signal"] > score["fulcher_signal"]
+    assert score["halpha_signal"] > 0
+    assert score["scan_score_reason"] == "fulcher_peaks+halpha"
+
+
 def test_instrument_width_restricts_sigma_bounds():
     import numpy as np
 
@@ -1227,6 +1253,7 @@ def test_qc_line_fit_page_pdf_and_optional_pngs(tmp_path):
         assert data_x.max() >= right - wavelength_step
     plt.close(fig)
 
+    open_figures_before = set(plt.get_fignums())
     written = write_line_fit_qc(
         spectrum,
         results,
@@ -1239,3 +1266,49 @@ def test_qc_line_fit_page_pdf_and_optional_pngs(tmp_path):
     assert len(written) == 4
     assert all(path.exists() and path.stat().st_size > 0 for path in written)
     assert len(list((tmp_path / "line_pngs").glob("*.png"))) == 3
+    assert set(plt.get_fignums()) == open_figures_before
+
+
+def test_qc_line_fit_pages_can_append_to_one_pdf(tmp_path):
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    from fulcher_extractor.extract import extract_lines
+    from fulcher_extractor.fit import FitConfig
+    from fulcher_extractor.line_database import FulcherLine
+    from fulcher_extractor.line_models import gaussian_area_model
+    from fulcher_extractor.qc import plot_line_fit_page
+    from fulcher_extractor.spectrocube_io import Spectrum
+
+    line = FulcherLine("H2", "Q", 0, 0, "0-0", 4, 607.4827, "synthetic", "nm")
+    wavelength = np.linspace(607.0, 608.0, 500)
+    pdf_output = tmp_path / "cube_line_fits.pdf"
+
+    with PdfPages(pdf_output) as pdf:
+        for frame in (0, 1):
+            intensity = 1.0 + gaussian_area_model(wavelength, 0.10 + 0.01 * frame, line.wavelength_nm, 0.0273)
+            spectrum = Spectrum(
+                source_path=__file__,
+                shot_id="synthetic",
+                selectors={"frame": frame},
+                wavelength_nm=wavelength,
+                intensity=intensity,
+                intensity_units="a.u.",
+                wavelength_medium="air",
+                metadata={},
+            )
+            results = extract_lines(
+                spectrum,
+                lines=[line],
+                wavelength_min_nm=607.0,
+                wavelength_max_nm=608.0,
+                config=FitConfig(instrument_sigma_nm=0.0273),
+            )
+            fig = plot_line_fit_page(spectrum, results, columns=1)
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    assert pdf_output.exists()
+    assert pdf_output.stat().st_size > 0
+    assert not plt.get_fignums()

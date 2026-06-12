@@ -1,17 +1,18 @@
-"""Run H2 Fulcher extraction plus Boltzmann/coronal summaries for a cube dataset."""
+"""Run H2 Fulcher dataset scanning and SpectroCube intensity extraction."""
 
 from __future__ import annotations
 
 import argparse
-import contextlib
 import csv
-import io
 import math
+import os
 import sys
 import time
 import traceback
 from collections import defaultdict
 from pathlib import Path
+
+from matplotlib.backends.backend_pdf import PdfPages
 
 try:
     import tomllib
@@ -28,20 +29,12 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from fulcher_analyzer import (
-    BoltzmannPlot,
-    CoronaModel,
-    apply_boltzmann_qc_mask,
-    boltzmann_qc_points,
-    plot_boltzmann_qc,
-    read_intensities,
-)
 from fulcher_extractor.extract import extract_lines
 from fulcher_extractor.fit import FitConfig
 from fulcher_extractor.line_database import load_lines
 from fulcher_extractor.line_policy import load_line_policy_set, overview_qc_lines
 from fulcher_extractor.output import results_to_dataframe, write_fulcheranalyzer_csvs
-from fulcher_extractor.qc import plot_region, write_line_fit_qc
+from fulcher_extractor.qc import plot_line_fit_page, plot_region
 from fulcher_extractor.spectrocube_io import load_spectrum, parse_shot_id
 
 
@@ -61,18 +54,65 @@ DEFAULT_SHOTS_TOML = next(
     (path for path in DEFAULT_SHOTS_TOML_CANDIDATES if path.is_file()),
     DEFAULT_SHOTS_TOML_CANDIDATES[0],
 )
-DEFAULT_SIGNAL_MIN_NM = 600.0
-DEFAULT_SIGNAL_MAX_NM = 630.0
+DEFAULT_FULCHER_MIN_NM = 600.0
+DEFAULT_FULCHER_MAX_NM = 630.0
+DEFAULT_HALPHA_MIN_NM = 655.5
+DEFAULT_HALPHA_MAX_NM = 657.1
+HALPHA_SCAN_WEIGHT = 0.25
 PLAN_PATH_KEYS = {"output_dir", "manifest", "shots_toml"}
 PLAN_LIST_AS_CSV_KEYS = {"shot_groups"}
-DEFAULT_SCAN_THRESHOLDS = (0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05, 0.055, 0.06)
+DEFAULT_SCAN_QUANTILES = (0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 0.98, 0.99)
+
+
+def _color_enabled() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    setting = os.environ.get("FULCHER_COLOR", "").lower()
+    if setting in {"1", "true", "yes", "on"}:
+        return True
+    if setting in {"0", "false", "no", "off"}:
+        return False
+    return sys.stdout.isatty()
+
+
+USE_COLOR = _color_enabled()
+
+
+def _c(text: str, code: str) -> str:
+    if not USE_COLOR:
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def _bold(text: str) -> str:
+    return _c(text, "1")
+
+
+def _dim(text: str) -> str:
+    return _c(text, "2")
+
+
+def _green(text: str) -> str:
+    return _c(text, "32")
+
+
+def _cyan(text: str) -> str:
+    return _c(text, "36")
+
+
+def _yellow(text: str) -> str:
+    return _c(text, "33")
+
+
+def _red(text: str) -> str:
+    return _c(text, "31")
 
 
 def _provided_destinations(parser: argparse.ArgumentParser, argv: list[str]) -> set[str]:
     provided: set[str] = set()
     actions = [action for action in parser._actions if action.dest != argparse.SUPPRESS]
     for token in argv:
-        if token in {"scan", "run"}:
+        if token in {"scan", "extract"}:
             provided.add("command")
         for action in actions:
             for option in action.option_strings:
@@ -82,7 +122,7 @@ def _provided_destinations(parser: argparse.ArgumentParser, argv: list[str]) -> 
 
 
 def _plan_path(value: object, plan_path: Path) -> Path:
-    path = Path(str(value))
+    path = Path(str(value)).expanduser()
     if path.is_absolute():
         return path
     return plan_path.parent / path
@@ -374,15 +414,206 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
+def _relative_display_path(path: Path, base: Path) -> str:
+    resolved_path = path.expanduser().resolve()
+    resolved_base = base.expanduser().resolve()
+    try:
+        return resolved_path.relative_to(resolved_base).as_posix()
+    except ValueError:
+        return str(resolved_path)
+
+
+def _print_artifact_summary(
+    *,
+    title: str,
+    output_dir: Path,
+    artifacts: list[tuple[str, Path]],
+    workdir: Path | None = None,
+) -> None:
+    workdir = workdir or Path.cwd()
+    print()
+    print(_bold(f"=== {title} ==="))
+    print(f"🏠 workdir   : {_dim(str(workdir.resolve()))}")
+    print(f"📁 output   : {_cyan(_relative_display_path(output_dir, workdir))}")
+    print("📄 artifacts:")
+    for label, path in artifacts:
+        print(f"  {_green('WRITE')} {label:<12} {_relative_display_path(path, output_dir)}")
+
+
+def _print_metric(label: str, value: object, *, icon: str = "•", color=None) -> None:
+    style = color or (lambda text: text)
+    print(f"{icon} {label:<17} {style(str(value))}")
+
+
+def _empty_window_stats(prefix: str) -> dict[str, object]:
+    return {
+        f"{prefix}_median": float("nan"),
+        f"{prefix}_p95": float("nan"),
+        f"{prefix}_p99": float("nan"),
+        f"{prefix}_max": float("nan"),
+        f"{prefix}_signal": float("nan"),
+        f"{prefix}_p95_signal": float("nan"),
+        f"{prefix}_peak_signal": float("nan"),
+        f"{prefix}_peak_count": 0,
+        f"{prefix}_n_finite": 0,
+    }
+
+
+def _window_stats(
+    wavelength: np.ndarray,
+    spectrum: np.ndarray,
+    *,
+    min_nm: float,
+    max_nm: float,
+    prefix: str,
+) -> dict[str, object]:
+    mask = (wavelength >= min_nm) & (wavelength <= max_nm)
+    x = wavelength[mask]
+    y = spectrum[mask]
+    finite_mask = np.isfinite(x) & np.isfinite(y)
+    if not finite_mask.any():
+        return _empty_window_stats(prefix)
+
+    finite = y[finite_mask]
+    median = float(np.median(finite))
+    p95 = float(np.quantile(finite, 0.95))
+    p99 = float(np.quantile(finite, 0.99))
+    maximum = float(finite.max())
+    signal = p99 - median
+    p95_signal = p95 - median
+
+    peak_signal = float("nan")
+    peak_count = 0
+    if finite.size >= 3:
+        centered = finite - median
+        local_maxima = centered[1:-1][
+            (finite[1:-1] > finite[:-2])
+            & (finite[1:-1] >= finite[2:])
+            & (centered[1:-1] > 0)
+        ]
+        mad = float(np.median(np.abs(finite - median)))
+        noise_floor = 3.0 * 1.4826 * mad
+        if local_maxima.size:
+            peak_signal = float(local_maxima.max())
+            if noise_floor > 0:
+                peak_count = int(np.count_nonzero(local_maxima >= noise_floor))
+            else:
+                peak_count = int(local_maxima.size)
+
+    return {
+        f"{prefix}_median": median,
+        f"{prefix}_p95": p95,
+        f"{prefix}_p99": p99,
+        f"{prefix}_max": maximum,
+        f"{prefix}_signal": signal,
+        f"{prefix}_p95_signal": p95_signal,
+        f"{prefix}_peak_signal": peak_signal,
+        f"{prefix}_peak_count": peak_count,
+        f"{prefix}_n_finite": int(finite.size),
+    }
+
+
+def _nanmax(*values: object) -> float:
+    finite = [float(value) for value in values if pd.notna(value) and np.isfinite(float(value))]
+    if not finite:
+        return float("nan")
+    return max(finite)
+
+
+def _score_scan_frame(
+    wavelength: np.ndarray,
+    spectrum: np.ndarray,
+    *,
+    fulcher_min_nm: float,
+    fulcher_max_nm: float,
+    halpha_min_nm: float = DEFAULT_HALPHA_MIN_NM,
+    halpha_max_nm: float = DEFAULT_HALPHA_MAX_NM,
+) -> dict[str, object]:
+    fulcher = _window_stats(
+        wavelength,
+        spectrum,
+        min_nm=fulcher_min_nm,
+        max_nm=fulcher_max_nm,
+        prefix="fulcher",
+    )
+    halpha = _window_stats(
+        wavelength,
+        spectrum,
+        min_nm=halpha_min_nm,
+        max_nm=halpha_max_nm,
+        prefix="halpha",
+    )
+    fulcher_window_signal = float(fulcher["fulcher_signal"])
+    fulcher_peak_signal = float(fulcher["fulcher_peak_signal"])
+    halpha_signal = float(halpha["halpha_signal"])
+
+    fulcher_evidence = _nanmax(fulcher_window_signal, fulcher_peak_signal)
+    halpha_support = np.isfinite(halpha_signal) and halpha_signal > 0
+    halpha_boost = (
+        HALPHA_SCAN_WEIGHT * fulcher_evidence
+        if halpha_support and np.isfinite(fulcher_evidence) and fulcher_evidence > 0
+        else 0.0
+    )
+    scan_score = fulcher_evidence + halpha_boost if np.isfinite(fulcher_evidence) else halpha_boost
+
+    reason = "no_signal"
+    if int(fulcher["fulcher_peak_count"]) > 0:
+        reason = "fulcher_peaks"
+    elif np.isfinite(fulcher_window_signal) and fulcher_window_signal > 0:
+        reason = "fulcher_window"
+    elif halpha_support:
+        reason = "halpha_only"
+    if halpha_boost > 0 and reason.startswith("fulcher"):
+        reason = f"{reason}+halpha"
+
+    return {
+        "scan_score": scan_score,
+        "scan_score_reason": reason,
+        "fulcher_evidence": fulcher_evidence,
+        "halpha_boost": halpha_boost,
+        "fulcher_min_nm": fulcher_min_nm,
+        "fulcher_max_nm": fulcher_max_nm,
+        "halpha_min_nm": halpha_min_nm,
+        "halpha_max_nm": halpha_max_nm,
+        **fulcher,
+        **halpha,
+    }
+
+
+def _scan_thresholds(scored: pd.DataFrame) -> list[float]:
+    if scored.empty:
+        return []
+    finite = scored["scan_score"].replace([np.inf, -np.inf], np.nan).dropna()
+    finite = finite[finite > 0]
+    if finite.empty:
+        return []
+    thresholds = sorted({float(value) for value in finite.quantile(DEFAULT_SCAN_QUANTILES)})
+    if len(thresholds) == 1:
+        return thresholds
+    cleaned: list[float] = []
+    for threshold in thresholds:
+        if not cleaned or not math.isclose(threshold, cleaned[-1], rel_tol=1e-9, abs_tol=1e-12):
+            cleaned.append(threshold)
+    return cleaned
+
+
 def _scan_threshold_rows(scored: pd.DataFrame) -> list[dict]:
     if scored.empty:
         return []
     rows: list[dict] = []
-    for threshold in DEFAULT_SCAN_THRESHOLDS:
-        selected = scored[scored["signal_metric"] >= threshold]
+    for threshold in _scan_thresholds(scored):
+        selected = scored[scored["scan_score"] >= threshold]
+        fulcher_threshold = threshold / (1.0 + HALPHA_SCAN_WEIGHT)
         row: dict[str, object] = {
-            "signal_threshold": threshold,
+            "scan_threshold": threshold,
+            "fulcher_threshold": fulcher_threshold,
+            "scan_quantile": float((scored["scan_score"] <= threshold).mean()),
+            "gate_metric": "scan_score",
             "selected_frames": int(len(selected)),
+            "fulcher_evidence_frames": int((selected["fulcher_evidence"] >= fulcher_threshold).sum()),
+            "fulcher_peak_frames": int((selected["fulcher_peak_signal"] >= fulcher_threshold).sum()),
+            "halpha_boost_frames": int((selected["halpha_boost"] >= threshold).sum()),
+            "halpha_support_frames": int((selected["halpha_boost"] > 0).sum()),
         }
         if "rax" in selected:
             for rax, count in selected.groupby("rax").size().items():
@@ -399,25 +630,6 @@ def _suggest_threshold(threshold_rows: list[dict], target: int = 350) -> dict | 
     return min(candidates, key=lambda row: abs(int(row["selected_frames"]) - target))
 
 
-def _format_temperature(value: object) -> str:
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return "nan"
-    if not math.isfinite(numeric):
-        return "nan"
-    return f"{numeric:.0f}K"
-
-
-def _run_progress_label(stem: str, *, trot1: object = None, trot2: object = None, tvib: object = None) -> str:
-    return (
-        f"{stem} "
-        f"T1={_format_temperature(trot1)} "
-        f"T2={_format_temperature(trot2)} "
-        f"Tv={_format_temperature(tvib)}"
-    )
-
-
 def _write_scan_report(
     path: Path,
     *,
@@ -432,33 +644,67 @@ def _write_scan_report(
         f"Scored frames: {len(scored)}",
         f"Selected frames: {len(selected)}",
         "",
+        "## What The Score Means",
+        "",
+        "`scan_score` is a ranking score in the cube intensity units, not a calibrated plasma quantity.",
+        "",
+        "```text",
+        "fulcher_evidence = max(fulcher_signal, fulcher_peak_signal)",
+        f"scan_score = fulcher_evidence + {HALPHA_SCAN_WEIGHT:g} * fulcher_evidence when H-alpha is present",
+        "```",
+        "",
+        "- `fulcher_signal`: p99 minus median intensity in the Fulcher review window.",
+        "- `fulcher_peak_signal`: strongest local peak above the Fulcher-window median.",
+        "- `halpha_signal`: p99 minus median intensity around H-alpha.",
+        "- H-alpha is a support flag: it can boost Fulcher evidence, but it cannot dominate the score by itself.",
+        "",
     ]
     if not scored.empty:
-        quantiles = scored["signal_metric"].quantile([0.5, 0.75, 0.9, 0.95, 0.98, 0.99])
-        lines.extend(["## Signal Metric Quantiles", ""])
+        quantiles = scored["scan_score"].quantile([0.5, 0.75, 0.9, 0.95, 0.98, 0.99])
+        lines.extend(["## Scan Score Quantiles", ""])
         for quantile, value in quantiles.items():
             lines.append(f"- p{quantile * 100:g}: {value:.6g}")
         lines.append("")
     if threshold_rows:
-        lines.extend(["## Candidate Gates", "", "| threshold | frames | Rax 3.6 | Rax 3.9 |", "|---:|---:|---:|---:|"])
+        lines.extend(
+            [
+                "## Candidate Gates",
+                "",
+                "| quantile | scan score | frames | Fulcher evidence | Fulcher peaks | H-alpha support | Rax 3.6 | Rax 3.9 |",
+                "|---:|---:|---:|---:|---:|---:|---:|---:|",
+            ]
+        )
         for row in threshold_rows:
             lines.append(
                 "| "
-                f"{float(row['signal_threshold']):.3f} | "
+                f"p{100 * float(row['scan_quantile']):.0f} | "
+                f"{float(row['scan_threshold']):.3f} | "
                 f"{int(row['selected_frames'])} | "
+                f"{int(row.get('fulcher_evidence_frames', 0))} | "
+                f"{int(row.get('fulcher_peak_frames', 0))} | "
+                f"{int(row.get('halpha_support_frames', 0))} | "
                 f"{int(row.get('rax_3_6_frames', 0))} | "
                 f"{int(row.get('rax_3_9_frames', 0))} |"
             )
         lines.append("")
+    lines.extend(
+        [
+            "## Scan Plot",
+            "",
+            "Open `scan_gate_summary.png` for the score distribution and candidate-gate curves.",
+            "",
+        ]
+    )
     if suggested:
-        threshold = float(suggested["signal_threshold"])
+        threshold = float(suggested["scan_threshold"])
         lines.extend(
             [
                 "## Suggested Next Command",
                 "",
                 "```powershell",
-                f"fulcher-h2-dataset --plan h2_dataset_plan.toml scan --signal-threshold {threshold:.3f}",
-                "fulcher-h2-dataset --plan h2_dataset_plan.toml run",
+                f"fulcher-h2-dataset --plan h2_dataset_plan.toml scan --scan-threshold {threshold:.3f}",
+                "fulcher-h2-dataset --plan h2_dataset_plan.toml extract",
+                "fulcher-analyze-batch --plan h2_dataset_plan.toml",
                 "```",
                 "",
             ]
@@ -466,7 +712,55 @@ def _write_scan_report(
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def scan_signal_frames(args: argparse.Namespace) -> None:
+def _write_scan_plot(
+    path: Path,
+    *,
+    scored: pd.DataFrame,
+    threshold_rows: list[dict],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), constrained_layout=True)
+
+    ax = axes[0]
+    if scored.empty:
+        ax.text(0.5, 0.5, "No scored frames", ha="center", va="center", transform=ax.transAxes)
+    else:
+        by_rax = scored.groupby("rax", dropna=False) if "rax" in scored else [(None, scored)]
+        for rax, group in by_rax:
+            label = f"Rax {rax}" if str(rax).strip() else "unlabelled"
+            ax.hist(
+                group["scan_score"].dropna(),
+                bins=40,
+                histtype="step",
+                linewidth=1.4,
+                label=label,
+            )
+        ax.legend(loc="best", fontsize=8)
+    ax.set_title("Scan score distribution", loc="left")
+    ax.set_xlabel("scan score")
+    ax.set_ylabel("frames")
+
+    ax = axes[1]
+    if threshold_rows:
+        thresholds = [float(row["scan_threshold"]) for row in threshold_rows]
+        selected = [int(row["selected_frames"]) for row in threshold_rows]
+        rax36 = [int(row.get("rax_3_6_frames", 0)) for row in threshold_rows]
+        rax39 = [int(row.get("rax_3_9_frames", 0)) for row in threshold_rows]
+        ax.plot(thresholds, selected, marker="o", label="selected")
+        ax.plot(thresholds, rax36, marker="s", label="Rax 3.6")
+        ax.plot(thresholds, rax39, marker="^", label="Rax 3.9")
+        ax.legend(loc="best", fontsize=8)
+    else:
+        ax.text(0.5, 0.5, "No candidate gates", ha="center", va="center", transform=ax.transAxes)
+    ax.set_title("Candidate gates by Rax", loc="left")
+    ax.set_xlabel("scan threshold")
+    ax.set_ylabel("frames")
+
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def scan_frames(args: argparse.Namespace) -> None:
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     cube_paths = _cube_paths(args.cube_glob, args.max_cubes)
@@ -502,8 +796,7 @@ def scan_signal_frames(args: argparse.Namespace) -> None:
             continue
         metadata = shot_metadata.get(shot, {})
         wavelength = ds["wavelength"].values
-        window_mask = (wavelength >= args.signal_min_nm) & (wavelength <= args.signal_max_nm)
-        intensity = ds["intensity"].sel(wavelength=window_mask)
+        intensity = ds["intensity"]
         if "frame" not in intensity.dims:
             frame_values = [0]
             data = intensity.values[None, :]
@@ -511,30 +804,18 @@ def scan_signal_frames(args: argparse.Namespace) -> None:
             frame_values = [int(v) for v in intensity["frame"].values]
             data = intensity.transpose("frame", "wavelength").values
         for frame, spectrum in zip(frame_values, data):
-            finite = spectrum[np.isfinite(spectrum)]
-            if finite.size:
-                median = float(pd.Series(finite).median())
-                p95 = float(pd.Series(finite).quantile(0.95))
-                p99 = float(pd.Series(finite).quantile(0.99))
-                maximum = float(finite.max())
-                signal_metric = p99 - median
-                p95_signal = p95 - median
-            else:
-                median = p95 = p99 = maximum = signal_metric = p95_signal = float("nan")
+            score = _score_scan_frame(
+                wavelength,
+                spectrum,
+                fulcher_min_nm=args.fulcher_min_nm,
+                fulcher_max_nm=args.fulcher_max_nm,
+            )
             rows.append(
                 {
                     "shot": shot,
                     "frame": frame,
                     "cube": str(cube_path),
-                    "signal_min_nm": args.signal_min_nm,
-                    "signal_max_nm": args.signal_max_nm,
-                    "window_median": median,
-                    "window_p95": p95,
-                    "window_p99": p99,
-                    "window_max": maximum,
-                    "signal_metric": signal_metric,
-                    "p95_signal": p95_signal,
-                    "n_finite": int(finite.size),
+                    **score,
                     "shot_groups": metadata.get("shot_groups", ""),
                     "rax": metadata.get("rax", ""),
                     "config": metadata.get("config", ""),
@@ -553,31 +834,48 @@ def scan_signal_frames(args: argparse.Namespace) -> None:
             )
 
     if rows:
-        scored = pd.DataFrame(rows).sort_values("signal_metric", ascending=False)
-        scored["signal_rank"] = range(1, len(scored) + 1)
+        scored = pd.DataFrame(rows).sort_values("scan_score", ascending=False)
+        scored["scan_rank"] = range(1, len(scored) + 1)
     else:
         scored = pd.DataFrame(
             columns=[
                 "shot",
                 "frame",
                 "cube",
-                "signal_min_nm",
-                "signal_max_nm",
-                "window_median",
-                "window_p95",
-                "window_p99",
-                "window_max",
-                "signal_metric",
-                "p95_signal",
-                "n_finite",
+                "scan_score",
+                "scan_score_reason",
+                "fulcher_min_nm",
+                "fulcher_max_nm",
+                "fulcher_signal",
+                "fulcher_evidence",
+                "fulcher_p95_signal",
+                "fulcher_median",
+                "fulcher_p95",
+                "fulcher_p99",
+                "fulcher_max",
+                "fulcher_n_finite",
+                "fulcher_peak_signal",
+                "fulcher_peak_count",
+                "halpha_min_nm",
+                "halpha_max_nm",
+                "halpha_signal",
+                "halpha_boost",
+                "halpha_p95_signal",
+                "halpha_median",
+                "halpha_p95",
+                "halpha_p99",
+                "halpha_max",
+                "halpha_n_finite",
+                "halpha_peak_signal",
+                "halpha_peak_count",
                 "shot_groups",
                 "rax",
                 "config",
                 "label",
-                "signal_rank",
+                "scan_rank",
             ]
         )
-    scored_path = output_dir / "frame_signal_scores.csv"
+    scored_path = output_dir / "frame_scan_scores.csv"
     scored.to_csv(scored_path, index=False)
 
     threshold_rows = _scan_threshold_rows(scored)
@@ -586,10 +884,10 @@ def scan_signal_frames(args: argparse.Namespace) -> None:
     suggested = _suggest_threshold(threshold_rows)
 
     selected = scored.copy()
-    if args.signal_threshold is None and args.select_top is None:
+    if args.scan_threshold is None and args.select_top is None:
         selected = scored.head(0)
-    if args.signal_threshold is not None:
-        selected = selected[selected["signal_metric"] >= args.signal_threshold]
+    if args.scan_threshold is not None:
+        selected = selected[selected["scan_score"] >= args.scan_threshold]
     if args.select_top is not None:
         selected = selected.head(args.select_top)
     selected_path = output_dir / "selected_frames.csv"
@@ -602,38 +900,48 @@ def scan_signal_frames(args: argparse.Namespace) -> None:
         threshold_rows=threshold_rows,
         suggested=suggested,
     )
+    plot_path = output_dir / "scan_gate_summary.png"
+    _write_scan_plot(plot_path, scored=scored, threshold_rows=threshold_rows)
 
-    print(f"signal scores: {scored_path}")
-    print(f"threshold summary: {threshold_path}")
-    print(f"scan summary: {report_path}")
-    print(f"selected frames: {selected_path}")
-    print(f"scored frames: {len(scored)}")
-    print(f"selected frames: {len(selected)}")
-    if args.signal_threshold is None and args.select_top is None:
-        print("selection gate: none; choose a gate below, then rerun scan with --signal-threshold or --select-top")
+    _print_artifact_summary(
+        title="H2 Fulcher scan",
+        output_dir=output_dir,
+        artifacts=[
+            ("scan scores", scored_path),
+            ("thresholds", threshold_path),
+            ("summary", report_path),
+            ("plot", plot_path),
+            ("selected", selected_path),
+        ],
+    )
+    _print_metric("scored frames", len(scored), icon="🧮", color=_cyan)
+    selected_color = _green if len(selected) else _yellow
+    _print_metric("selected frames", len(selected), icon="✅", color=selected_color)
+    if args.scan_threshold is None and args.select_top is None:
+        print(_yellow("🧪 selection gate: none; choose a gate below, then rerun scan with --scan-threshold or --select-top"))
     if args.shot_groups:
-        print(f"shot groups: {args.shot_groups}")
+        _print_metric("shot groups", args.shot_groups, icon="🎯", color=_cyan)
     if threshold_rows:
-        print("candidate gates:")
+        print()
+        print(_bold("📊 Candidate gates"))
         for row in threshold_rows:
+            threshold_text = _cyan(f"{float(row['scan_threshold']):.3f}")
             print(
                 "  "
-                f"{float(row['signal_threshold']):.3f}: "
-                f"{int(row['selected_frames'])} frames "
-                f"(Rax 3.6: {int(row.get('rax_3_6_frames', 0))}, "
-                f"Rax 3.9: {int(row.get('rax_3_9_frames', 0))})"
+                f"{threshold_text}  "
+                f"{int(row['selected_frames']):>4} frames  "
+                f"{_dim('Rax 3.6:')} {int(row.get('rax_3_6_frames', 0)):>3}  "
+                f"{_dim('Rax 3.9:')} {int(row.get('rax_3_9_frames', 0)):>3}  "
+                f"{_dim('Fulcher peaks:')} {int(row.get('fulcher_peak_frames', 0)):>4}"
             )
-    if args.signal_threshold is None and args.select_top is None and suggested:
-        threshold = float(suggested["signal_threshold"])
-        print(
-            "suggested first pass: "
-            f"fulcher-h2-dataset --plan h2_dataset_plan.toml scan --signal-threshold {threshold:.3f}"
-        )
+    if args.scan_threshold is None and args.select_top is None and suggested:
+        threshold = float(suggested["scan_threshold"])
+        print()
+        print(_green("▶ suggested first pass"))
+        print(f"  fulcher-h2-dataset --plan h2_dataset_plan.toml scan --scan-threshold {threshold:.3f}")
     if not selected.empty:
-        print(
-            "selected signal range: "
-            f"{selected['signal_metric'].min():.6g} .. {selected['signal_metric'].max():.6g}"
-        )
+        score_range = f"{selected['scan_score'].min():.6g} .. {selected['scan_score'].max():.6g}"
+        _print_metric("score range", score_range, icon="📈", color=_cyan)
 
 
 def _fit_config() -> FitConfig:
@@ -648,52 +956,13 @@ def _fit_config() -> FitConfig:
     )
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--plan", type=Path, default=None, help="TOML run plan with [common], [scan], and [run] sections.")
-    parser.add_argument(
-        "command",
-        nargs="?",
-        choices=["scan", "run"],
-        default="run",
-        help="scan ranks signal frames; run processes selected frames.",
-    )
-    parser.add_argument("--cube-glob", default=DEFAULT_CUBE_GLOB)
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--frames", default="all", help="all, a comma list, or ranges like 0-10,20")
-    parser.add_argument("--manifest", type=Path, default=None, help="CSV from scan, usually selected_frames.csv.")
-    parser.add_argument("--engine", default=None)
-    parser.add_argument("--max-cubes", type=int, default=None)
-    parser.add_argument("--max-frames", type=int, default=None)
-    parser.add_argument("--max-fit-relerr", type=float, default=1.0)
-    parser.add_argument("--shots-toml", type=Path, default=DEFAULT_SHOTS_TOML)
-    parser.add_argument("--shot-groups", default="", help="scan: comma-separated groups from shots.toml, e.g. rax36,rax39.")
-    parser.add_argument("--select-top", type=int, default=None, help="scan: optional top N frames by signal metric.")
-    parser.add_argument("--signal-threshold", type=float, default=None, help="scan: optional minimum signal metric.")
-    parser.add_argument("--signal-min-nm", type=float, default=DEFAULT_SIGNAL_MIN_NM)
-    parser.add_argument("--signal-max-nm", type=float, default=DEFAULT_SIGNAL_MAX_NM)
-    parser.add_argument("--progress-every", type=int, default=5, help="Print progress every N cubes/frames.")
-    parser.add_argument("--no-progress", action="store_true", help="Disable progress bars and use periodic log lines.")
-    parser.add_argument("--show-model-output", action="store_true", help="Show verbose per-frame output from downstream model code.")
-    parser.add_argument("--qc-every", type=int, default=0, help="Write extraction/Boltzmann plots every N frames; 0 disables.")
-    parser.add_argument("--line-fit-qc", action="store_true", help="Also write per-frame line-fit PDFs when --qc-every selects a frame.")
-    args = parser.parse_args()
-    provided = _provided_destinations(parser, sys.argv[1:])
-    if args.plan:
-        _apply_plan(args, args.plan, provided)
-
-    if args.command == "scan":
-        scan_signal_frames(args)
-        return
-
+def extract_dataset(args: argparse.Namespace) -> None:
     output_dir = args.output_dir
     intensity_dir = output_dir / "intensities"
     fit_report_dir = output_dir / "fit_reports"
     qc_region_dir = output_dir / "plots" / "extraction_region"
     qc_line_dir = output_dir / "plots" / "extraction_lines"
-    boltzmann_plot_dir = output_dir / "plots" / "boltzmann"
-    tables_dir = output_dir / "tables"
-    for path in (intensity_dir, fit_report_dir, qc_region_dir, qc_line_dir, boltzmann_plot_dir, tables_dir):
+    for path in (intensity_dir, fit_report_dir, qc_region_dir, qc_line_dir):
         path.mkdir(parents=True, exist_ok=True)
 
     manifest_frames = _load_manifest(args.manifest) if args.manifest else None
@@ -707,9 +976,7 @@ def main() -> None:
     label_lines = overview_qc_lines(lines, policy_set=policy_set)
     config = _fit_config()
 
-    run_rows: list[dict] = []
-    boltzmann_rows: list[dict] = []
-    coronal_rows: list[dict] = []
+    extraction_rows: list[dict] = []
     calibration_rows: list[dict] = []
     policy_rows: list[dict] = []
     processed = 0
@@ -725,7 +992,7 @@ def main() -> None:
         total_frames = min(total_frames, args.max_frames)
     update_progress, close_progress = _progress_updater(
         total=total_frames or None,
-        desc="run frames",
+        desc="extract frames",
         every=args.progress_every,
         enabled=not args.no_progress,
     )
@@ -748,30 +1015,28 @@ def main() -> None:
                     "order_wavelength_ranges_nm_json": cube_attrs.get("order_wavelength_ranges_nm_json", ""),
                 }
             )
-            for frame in frames:
-                if args.max_frames is not None and processed >= args.max_frames:
-                    break
-                processed += 1
-                stem = f"{shot}_fr_{frame}"
-                if args.no_progress and (
-                    processed == 1 or processed % args.progress_every == 0
-                ):
-                    elapsed = time.monotonic() - start
-                    print(
-                        f"run frame {processed}: cube {cube_index}/{len(cube_paths)} "
-                        f"{stem}, elapsed {elapsed:.1f}s",
-                        flush=True,
-                )
-                row = {"shot": shot, "frame": frame, "cube": str(cube_path), "status": "ok"}
-                progress_label = stem
-                model_stdout = io.StringIO()
-                stdout_context = (
-                    contextlib.nullcontext()
-                    if args.show_model_output
-                    else contextlib.redirect_stdout(model_stdout)
-                )
-                try:
-                    with stdout_context:
+            line_fit_pdf = None
+            if args.line_fit_qc:
+                line_fit_pdf_path = qc_line_dir / f"{cube_path.stem}_line_fits.pdf"
+                line_fit_pdf = PdfPages(line_fit_pdf_path)
+            try:
+                for frame in frames:
+                    if args.max_frames is not None and processed >= args.max_frames:
+                        break
+                    processed += 1
+                    stem = f"{shot}_fr_{frame}"
+                    if args.no_progress and (
+                        processed == 1 or processed % args.progress_every == 0
+                    ):
+                        elapsed = time.monotonic() - start
+                        print(
+                            f"extract frame {processed}: cube {cube_index}/{len(cube_paths)} "
+                            f"{stem}, elapsed {elapsed:.1f}s",
+                            flush=True,
+                        )
+                    row = {"shot": shot, "frame": frame, "cube": str(cube_path), "status": "ok"}
+                    progress_label = stem
+                    try:
                         spectrum = load_spectrum(cube_path, frame=frame, engine=args.engine)
                         results = extract_lines(spectrum, lines=lines, config=config)
                         metadata = {
@@ -790,7 +1055,7 @@ def main() -> None:
                         fit_table = results_to_dataframe(results)
                         fit_report_copy = fit_report_dir / fit_report_path.name
                         fit_table.to_csv(fit_report_copy, index=False)
-        
+
                         summary = (
                             fit_table.groupby(["legacy_policy", "legacy_matrix_action"], dropna=False)
                             .size()
@@ -807,57 +1072,7 @@ def main() -> None:
                                     "n_lines": int(policy_row["n_lines"]),
                                 }
                             )
-        
-                        intensities = read_intensities(shot, frame, data_folder=intensity_dir)
-                        bp = BoltzmannPlot(intensities, "h")
-                        points = boltzmann_qc_points(
-                            bp,
-                            max_fit_relerr=args.max_fit_relerr,
-                            fit_report=fit_report_copy,
-                        )
-                        apply_boltzmann_qc_mask(bp, points)
-                        bp.autofit()
-                        points = boltzmann_qc_points(
-                            bp,
-                            max_fit_relerr=args.max_fit_relerr,
-                            fit_report=fit_report_copy,
-                        )
-                        points.to_csv(tables_dir / f"{stem}_boltzmann_qc_points.csv", index=False)
-                        boltzmann_rows.append(
-                            {
-                                "shot": shot,
-                                "frame": frame,
-                                "alpha": bp.alpha,
-                                "beta": bp.beta,
-                                "Trot1": bp.trot1,
-                                "Trot2": bp.trot2,
-                                "alpha_stderr": bp.err[0],
-                                "beta_stderr": bp.err[1],
-                                "Trot1_stderr": bp.err[2],
-                                "Trot2_stderr": bp.err[3],
-                                "n_boltzmann_points": int(points["fit_mask"].sum()) if "fit_mask" in points else "",
-                                "status": "ok",
-                            }
-                        )
-        
-                        cm = CoronaModel(bp)
-                        cm.coronal_autofit()
-                        progress_label = _run_progress_label(
-                            stem,
-                            trot1=bp.trot1,
-                            trot2=bp.trot2,
-                            tvib=cm.tvib,
-                        )
-                        coronal_rows.append(
-                            {
-                                "shot": shot,
-                                "frame": frame,
-                                "Tvib": cm.tvib,
-                                "Tvib_stderr": cm.tviberr,
-                                "status": "ok",
-                            }
-                        )
-        
+
                         if args.qc_every and processed % args.qc_every == 0:
                             fig = plot_region(
                                 spectrum,
@@ -867,69 +1082,119 @@ def main() -> None:
                                 output_path=qc_region_dir / f"{stem}_600_630.png",
                             )
                             plt.close(fig)
-                            fig = plot_boltzmann_qc(
-                                bp,
-                                points,
-                                title=f"H2 {shot} frame {frame}: d-state Boltzmann fit",
-                            )
-                            fig.savefig(boltzmann_plot_dir / f"{stem}_boltzmann_qc.png", dpi=180)
+                        if line_fit_pdf is not None:
+                            fig = plot_line_fit_page(spectrum, results, columns=5)
+                            line_fit_pdf.savefig(fig)
                             plt.close(fig)
-                            if args.line_fit_qc:
-                                write_line_fit_qc(
-                                    spectrum,
-                                    results,
-                                    pdf_path=qc_line_dir / f"{stem}_line_fits.pdf",
-                                    columns=5,
-                                )
                         row["n_lines"] = len(results)
-                except Exception as exc:
-                    row["status"] = "failed"
-                    row["error"] = repr(exc)
-                    row["traceback"] = traceback.format_exc()
-                    if not args.show_model_output and model_stdout.getvalue():
-                        row["captured_stdout"] = model_stdout.getvalue()
-                    progress_label = f"{stem} failed"
-                    boltzmann_rows.append({"shot": shot, "frame": frame, "status": "failed", "error": repr(exc)})
-                    coronal_rows.append({"shot": shot, "frame": frame, "status": "failed", "error": repr(exc)})
-                    print(f"failed {stem}: {exc!r}", file=sys.stderr, flush=True)
-                run_rows.append(row)
-                update_progress(processed, progress_label)
+                        progress_label = f"{stem} lines={len(results)}"
+                    except Exception as exc:
+                        row["status"] = "failed"
+                        row["error"] = repr(exc)
+                        row["traceback"] = traceback.format_exc()
+                        progress_label = f"{stem} failed"
+                        print(f"failed {stem}: {exc!r}", file=sys.stderr, flush=True)
+                    extraction_rows.append(row)
+                    update_progress(processed, progress_label)
+            finally:
+                if line_fit_pdf is not None:
+                    line_fit_pdf.close()
             if args.max_frames is not None and processed >= args.max_frames:
                 break
     finally:
         close_progress()
 
-    _write_csv(output_dir / "run_summary.csv", run_rows)
-    _write_csv(output_dir / "boltzmann_summary.csv", boltzmann_rows)
-    _write_csv(output_dir / "coronal_summary.csv", coronal_rows)
-    _write_csv(output_dir / "policy_summary.csv", policy_rows)
-    _write_csv(output_dir / "calibration_manifest.csv", calibration_rows)
-    (output_dir / "README.md").write_text(
+    extraction_summary_path = output_dir / "extraction_summary.csv"
+    policy_summary_path = output_dir / "policy_summary.csv"
+    calibration_manifest_path = output_dir / "calibration_manifest.csv"
+    readme_path = output_dir / "README.md"
+    _write_csv(extraction_summary_path, extraction_rows)
+    _write_csv(policy_summary_path, policy_rows)
+    _write_csv(calibration_manifest_path, calibration_rows)
+    readme_path.write_text(
         "\n".join(
             [
-                "# H2 Fulcher Dataset Run",
+                "# H2 Fulcher Dataset Extraction",
                 "",
                 f"Cube glob: `{args.cube_glob}`",
                 f"Plan: `{args.plan or ''}`",
                 f"Manifest: `{args.manifest or ''}`",
                 f"Frames: `{args.frames}`",
-                f"Processed frames: `{processed}`",
+                f"Extracted frames: `{processed}`",
                 "",
                 "Primary outputs:",
                 "",
                 "- `intensities/`: fulcheranalyzer-compatible intensity/error matrices",
                 "- `fit_reports/`: long-form extraction audit tables",
-                "- `boltzmann_summary.csv`: per-frame two-temperature fit summary",
-                "- `coronal_summary.csv`: per-frame coronal Tvib summary",
+                "- `plots/extraction_lines/`: one line-fit PDF per cube, with one page per extracted frame",
                 "- `calibration_manifest.csv`: cube calibration metadata and digests",
                 "- `policy_summary.csv`: per-frame extraction policy counts",
+                "",
+                "Downstream analysis:",
+                "",
+                "```shell",
+                "fulcher-analyze-batch --plan h2_dataset_plan.toml",
+                "```",
                 "",
             ]
         ),
         encoding="utf-8",
     )
-    print(f"processed frames: {processed}")
-    print(f"output: {output_dir}")
+    _print_artifact_summary(
+        title="H2 Fulcher extraction",
+        output_dir=output_dir,
+        artifacts=[
+            ("intensities", intensity_dir),
+            ("fit reports", fit_report_dir),
+            ("region plots", qc_region_dir),
+            ("line PDFs", qc_line_dir),
+            ("summary", extraction_summary_path),
+            ("policy", policy_summary_path),
+            ("calibration", calibration_manifest_path),
+            ("readme", readme_path),
+        ],
+    )
+    print(f"extracted frames: {processed}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--plan", type=Path, default=None, help="TOML run plan with [common], [scan], and [extract] sections.")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=["scan", "extract"],
+        default="extract",
+        help="scan ranks candidate frames; extract writes intensity tables.",
+    )
+    parser.add_argument("--cube-glob", default=DEFAULT_CUBE_GLOB)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--frames", default="all", help="all, a comma list, or ranges like 0-10,20")
+    parser.add_argument("--manifest", type=Path, default=None, help="CSV from scan, usually selected_frames.csv.")
+    parser.add_argument("--engine", default=None)
+    parser.add_argument("--max-cubes", type=int, default=None)
+    parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--shots-toml", type=Path, default=DEFAULT_SHOTS_TOML)
+    parser.add_argument("--shot-groups", default="", help="scan: comma-separated groups from shots.toml, e.g. rax36,rax39.")
+    parser.add_argument("--select-top", type=int, default=None, help="scan: optional top N frames by scan score.")
+    parser.add_argument("--scan-threshold", type=float, default=None, help="scan: optional minimum scan score.")
+    parser.add_argument("--fulcher-min-nm", type=float, default=DEFAULT_FULCHER_MIN_NM)
+    parser.add_argument("--fulcher-max-nm", type=float, default=DEFAULT_FULCHER_MAX_NM)
+    parser.add_argument("--progress-every", type=int, default=5, help="Print progress every N cubes/frames.")
+    parser.add_argument("--no-progress", action="store_true", help="Disable progress bars and use periodic log lines.")
+    parser.add_argument("--qc-every", type=int, default=0, help="Write extraction plots every N frames; 0 disables.")
+    parser.add_argument("--line-fit-qc", action="store_true", help="Also write per-frame line-fit PDFs when --qc-every selects a frame.")
+    args = parser.parse_args()
+    provided = _provided_destinations(parser, sys.argv[1:])
+    if args.plan:
+        _apply_plan(args, args.plan, provided)
+
+    if args.command == "scan":
+        scan_frames(args)
+        return
+    if args.command == "extract":
+        extract_dataset(args)
+        return
 
 
 if __name__ == "__main__":
