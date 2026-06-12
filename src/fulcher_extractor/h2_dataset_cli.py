@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import math
 import os
@@ -956,6 +957,110 @@ def _fit_config() -> FitConfig:
     )
 
 
+def _extract_frame_task(task: dict) -> dict:
+    cube_path = Path(task["cube_path"])
+    shot = task["shot"]
+    frame = int(task["frame"])
+    stem = task["stem"]
+    intensity_dir = Path(task["intensity_dir"])
+    fit_report_dir = Path(task["fit_report_dir"])
+    qc_region_dir = Path(task["qc_region_dir"])
+    qc_line_dir = Path(task["qc_line_dir"])
+    row = {"shot": shot, "frame": frame, "cube": str(cube_path), "status": "ok"}
+    policy_rows: list[dict] = []
+    progress_label = stem
+    try:
+        lines = load_lines()
+        config = _fit_config()
+        spectrum = load_spectrum(cube_path, frame=frame, engine=task["engine"])
+        results = extract_lines(spectrum, lines=lines, config=config)
+        metadata = {
+            "policy_layer": "line_policies.toml",
+            "source_cube": str(cube_path),
+            "wavelength_calibration_file": spectrum.metadata.get("wavelength_calibration_file", ""),
+            "calibration_file_digests_json": spectrum.metadata.get("calibration_file_digests_json", ""),
+        }
+        _, _, fit_report_path = write_fulcheranalyzer_csvs(
+            results,
+            output_dir=intensity_dir,
+            shot=shot,
+            frame=frame,
+            metadata=metadata,
+        )
+        fit_table = results_to_dataframe(results)
+        fit_report_copy = fit_report_dir / fit_report_path.name
+        fit_table.to_csv(fit_report_copy, index=False)
+
+        summary = (
+            fit_table.groupby(["legacy_policy", "legacy_matrix_action"], dropna=False)
+            .size()
+            .rename("n_lines")
+            .reset_index()
+        )
+        for _, policy_row in summary.iterrows():
+            policy_rows.append(
+                {
+                    "shot": shot,
+                    "frame": frame,
+                    "legacy_policy": policy_row["legacy_policy"],
+                    "legacy_matrix_action": policy_row["legacy_matrix_action"],
+                    "n_lines": int(policy_row["n_lines"]),
+                }
+            )
+
+        if task["write_region_qc"]:
+            policy_set = load_line_policy_set()
+            label_lines = overview_qc_lines(lines, policy_set=policy_set)
+            fig = plot_region(
+                spectrum,
+                lines=lines,
+                label_lines=label_lines,
+                guide_lines=label_lines,
+                output_path=qc_region_dir / f"{stem}_600_630.png",
+            )
+            plt.close(fig)
+        if task["write_line_fit_qc"]:
+            fig = plot_line_fit_page(spectrum, results, columns=5)
+            if task["parallel_line_fit_qc"]:
+                with PdfPages(qc_line_dir / f"{stem}_line_fits.pdf") as pdf:
+                    pdf.savefig(fig)
+            else:
+                line_fit_pdf = task["line_fit_pdf"]
+                if line_fit_pdf is not None:
+                    line_fit_pdf.savefig(fig)
+            plt.close(fig)
+        row["n_lines"] = len(results)
+        progress_label = f"{stem} lines={len(results)}"
+    except Exception as exc:
+        row["status"] = "failed"
+        row["error"] = repr(exc)
+        row["traceback"] = traceback.format_exc()
+        progress_label = f"{stem} failed"
+    return {
+        "ordinal": int(task["ordinal"]),
+        "row": row,
+        "policy_rows": policy_rows,
+        "progress_label": progress_label,
+    }
+
+
+def _worker_count(value: int | None) -> int:
+    if value is None:
+        return 1
+    if value < 1:
+        cpu_count = os.cpu_count() or 1
+        return max(cpu_count - 1, 1)
+    return value
+
+
+def _stop_executor(executor: concurrent.futures.ProcessPoolExecutor) -> None:
+    terminate_workers = getattr(executor, "terminate_workers", None)
+    if terminate_workers is not None:
+        terminate_workers()
+        return
+    executor.shutdown(wait=False, cancel_futures=True)
+
+
 def extract_dataset(args: argparse.Namespace) -> None:
     output_dir = args.output_dir
     intensity_dir = output_dir / "intensities"
@@ -971,138 +1076,146 @@ def extract_dataset(args: argparse.Namespace) -> None:
     if not cube_paths:
         raise SystemExit(f"No cubes matched {args.cube_glob!r}")
 
-    lines = load_lines()
-    policy_set = load_line_policy_set()
-    label_lines = overview_qc_lines(lines, policy_set=policy_set)
-    config = _fit_config()
-
     extraction_rows: list[dict] = []
     calibration_rows: list[dict] = []
     policy_rows: list[dict] = []
-    processed = 0
     start = time.monotonic()
 
-    total_frames = 0
+    tasks: list[dict] = []
     manifest_by_cube = manifest_frames or {}
-    if manifest_frames is not None:
-        total_frames = sum(len(frames) for frames in manifest_by_cube.values())
-    elif requested_frames is not None:
-        total_frames = len(cube_paths) * len(requested_frames)
-    if args.max_frames is not None and total_frames:
-        total_frames = min(total_frames, args.max_frames)
+    for cube_index, cube_path in enumerate(cube_paths, start=1):
+        shot, frames, cube_attrs = _cube_frames(cube_path, requested_frames, engine=args.engine)
+        if manifest_frames is not None:
+            frames = sorted(manifest_by_cube.get(str(cube_path), set()))
+            if not frames:
+                continue
+        calibration_rows.append(
+            {
+                "shot": shot,
+                "cube": str(cube_path),
+                "wavelength_calibration_file": cube_attrs.get("wavelength_calibration_file", ""),
+                "calibration_order_pattern_file": cube_attrs.get("calibration_order_pattern_file", ""),
+                "calibration_file_digests_json": cube_attrs.get("calibration_file_digests_json", ""),
+                "order_border_pixel_ranges_json": cube_attrs.get("order_border_pixel_ranges_json", ""),
+                "order_wavelength_ranges_nm_json": cube_attrs.get("order_wavelength_ranges_nm_json", ""),
+            }
+        )
+        for frame in frames:
+            if args.max_frames is not None and len(tasks) >= args.max_frames:
+                break
+            ordinal = len(tasks) + 1
+            stem = f"{shot}_fr_{frame}"
+            tasks.append(
+                {
+                    "ordinal": ordinal,
+                    "cube_index": cube_index,
+                    "cube_count": len(cube_paths),
+                    "cube_path": str(cube_path),
+                    "shot": shot,
+                    "frame": frame,
+                    "stem": stem,
+                    "engine": args.engine,
+                    "intensity_dir": str(intensity_dir),
+                    "fit_report_dir": str(fit_report_dir),
+                    "qc_region_dir": str(qc_region_dir),
+                    "qc_line_dir": str(qc_line_dir),
+                    "write_region_qc": bool(args.qc_every and ordinal % args.qc_every == 0),
+                    "write_line_fit_qc": False,
+                    "parallel_line_fit_qc": False,
+                    "line_fit_pdf": None,
+                }
+            )
+        if args.max_frames is not None and len(tasks) >= args.max_frames:
+            break
+
+    total_frames = len(tasks)
     update_progress, close_progress = _progress_updater(
-        total=total_frames or None,
+        total=total_frames,
         desc="extract frames",
         every=args.progress_every,
         enabled=not args.no_progress,
     )
+    workers = _worker_count(args.workers)
+    if args.line_fit_qc and workers > 1:
+        for task in tasks:
+            task["write_line_fit_qc"] = True
+            task["parallel_line_fit_qc"] = True
 
+    results: list[dict] = []
+    interrupted = False
     try:
-        for cube_index, cube_path in enumerate(cube_paths, start=1):
-            shot, frames, cube_attrs = _cube_frames(cube_path, requested_frames, engine=args.engine)
-            if manifest_frames is not None:
-                frames = sorted(manifest_frames.get(str(cube_path), set()))
-                if not frames:
-                    continue
-            calibration_rows.append(
-                {
-                    "shot": shot,
-                    "cube": str(cube_path),
-                    "wavelength_calibration_file": cube_attrs.get("wavelength_calibration_file", ""),
-                    "calibration_order_pattern_file": cube_attrs.get("calibration_order_pattern_file", ""),
-                    "calibration_file_digests_json": cube_attrs.get("calibration_file_digests_json", ""),
-                    "order_border_pixel_ranges_json": cube_attrs.get("order_border_pixel_ranges_json", ""),
-                    "order_wavelength_ranges_nm_json": cube_attrs.get("order_wavelength_ranges_nm_json", ""),
-                }
-            )
-            line_fit_pdf = None
-            if args.line_fit_qc:
-                line_fit_pdf_path = qc_line_dir / f"{cube_path.stem}_line_fits.pdf"
-                line_fit_pdf = PdfPages(line_fit_pdf_path)
+        if workers == 1:
+            open_pdfs: dict[str, PdfPages] = {}
             try:
-                for frame in frames:
-                    if args.max_frames is not None and processed >= args.max_frames:
-                        break
-                    processed += 1
-                    stem = f"{shot}_fr_{frame}"
+                for task in tasks:
+                    if args.line_fit_qc:
+                        pdf_path = qc_line_dir / f"{Path(task['cube_path']).stem}_line_fits.pdf"
+                        pdf_key = str(pdf_path)
+                        open_pdfs.setdefault(pdf_key, PdfPages(pdf_path))
+                        task["write_line_fit_qc"] = True
+                        task["line_fit_pdf"] = open_pdfs[pdf_key]
+                    result = _extract_frame_task(task)
+                    results.append(result)
                     if args.no_progress and (
-                        processed == 1 or processed % args.progress_every == 0
+                        result["ordinal"] == 1 or result["ordinal"] % args.progress_every == 0
                     ):
                         elapsed = time.monotonic() - start
                         print(
-                            f"extract frame {processed}: cube {cube_index}/{len(cube_paths)} "
-                            f"{stem}, elapsed {elapsed:.1f}s",
+                            f"extract frame {result['ordinal']}: "
+                            f"{result['progress_label']}, elapsed {elapsed:.1f}s",
                             flush=True,
                         )
-                    row = {"shot": shot, "frame": frame, "cube": str(cube_path), "status": "ok"}
-                    progress_label = stem
-                    try:
-                        spectrum = load_spectrum(cube_path, frame=frame, engine=args.engine)
-                        results = extract_lines(spectrum, lines=lines, config=config)
-                        metadata = {
-                            "policy_layer": "line_policies.toml",
-                            "source_cube": str(cube_path),
-                            "wavelength_calibration_file": spectrum.metadata.get("wavelength_calibration_file", ""),
-                            "calibration_file_digests_json": spectrum.metadata.get("calibration_file_digests_json", ""),
-                        }
-                        _, _, fit_report_path = write_fulcheranalyzer_csvs(
-                            results,
-                            output_dir=intensity_dir,
-                            shot=shot,
-                            frame=frame,
-                            metadata=metadata,
-                        )
-                        fit_table = results_to_dataframe(results)
-                        fit_report_copy = fit_report_dir / fit_report_path.name
-                        fit_table.to_csv(fit_report_copy, index=False)
-
-                        summary = (
-                            fit_table.groupby(["legacy_policy", "legacy_matrix_action"], dropna=False)
-                            .size()
-                            .rename("n_lines")
-                            .reset_index()
-                        )
-                        for _, policy_row in summary.iterrows():
-                            policy_rows.append(
-                                {
-                                    "shot": shot,
-                                    "frame": frame,
-                                    "legacy_policy": policy_row["legacy_policy"],
-                                    "legacy_matrix_action": policy_row["legacy_matrix_action"],
-                                    "n_lines": int(policy_row["n_lines"]),
-                                }
-                            )
-
-                        if args.qc_every and processed % args.qc_every == 0:
-                            fig = plot_region(
-                                spectrum,
-                                lines=lines,
-                                label_lines=label_lines,
-                                guide_lines=label_lines,
-                                output_path=qc_region_dir / f"{stem}_600_630.png",
-                            )
-                            plt.close(fig)
-                        if line_fit_pdf is not None:
-                            fig = plot_line_fit_page(spectrum, results, columns=5)
-                            line_fit_pdf.savefig(fig)
-                            plt.close(fig)
-                        row["n_lines"] = len(results)
-                        progress_label = f"{stem} lines={len(results)}"
-                    except Exception as exc:
-                        row["status"] = "failed"
-                        row["error"] = repr(exc)
-                        row["traceback"] = traceback.format_exc()
-                        progress_label = f"{stem} failed"
-                        print(f"failed {stem}: {exc!r}", file=sys.stderr, flush=True)
-                    extraction_rows.append(row)
-                    update_progress(processed, progress_label)
+                    update_progress(result["ordinal"], result["progress_label"])
             finally:
-                if line_fit_pdf is not None:
-                    line_fit_pdf.close()
-            if args.max_frames is not None and processed >= args.max_frames:
-                break
+                for pdf in open_pdfs.values():
+                    pdf.close()
+        else:
+            print(f"extract workers: {workers}", file=sys.stderr, flush=True)
+            executor = concurrent.futures.ProcessPoolExecutor(max_workers=workers)
+            try:
+                future_to_task = {executor.submit(_extract_frame_task, task): task for task in tasks}
+                completed = 0
+                for future in concurrent.futures.as_completed(future_to_task):
+                    result = future.result()
+                    completed += 1
+                    results.append(result)
+                    if result["row"].get("status") == "failed":
+                        print(
+                            f"failed {result['row']['shot']}_fr_{result['row']['frame']}: "
+                            f"{result['row'].get('error', '')}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    if args.no_progress and (
+                        completed == 1 or completed % args.progress_every == 0
+                    ):
+                        elapsed = time.monotonic() - start
+                        print(
+                            f"extract frame {completed}/{total_frames}: "
+                            f"{result['progress_label']}, elapsed {elapsed:.1f}s",
+                            flush=True,
+                        )
+                    update_progress(completed, result["progress_label"])
+            except KeyboardInterrupt:
+                interrupted = True
+                for future in future_to_task:
+                    future.cancel()
+                _stop_executor(executor)
+            else:
+                executor.shutdown()
+    except KeyboardInterrupt:
+        interrupted = True
     finally:
         close_progress()
+    if interrupted:
+        print(
+            "Extraction interrupted by Ctrl+C; writing summaries for completed frames only.",
+            file=sys.stderr,
+            flush=True,
+        )
+    for result in sorted(results, key=lambda item: item["ordinal"]):
+        extraction_rows.append(result["row"])
+        policy_rows.extend(result["policy_rows"])
 
     extraction_summary_path = output_dir / "extraction_summary.csv"
     policy_summary_path = output_dir / "policy_summary.csv"
@@ -1120,13 +1233,14 @@ def extract_dataset(args: argparse.Namespace) -> None:
                 f"Plan: `{args.plan or ''}`",
                 f"Manifest: `{args.manifest or ''}`",
                 f"Frames: `{args.frames}`",
-                f"Extracted frames: `{processed}`",
+                f"Workers: `{workers}`",
+                f"Extracted frames: `{len(extraction_rows)}`",
                 "",
                 "Primary outputs:",
                 "",
                 "- `intensities/`: fulcheranalyzer-compatible intensity/error matrices",
                 "- `fit_reports/`: long-form extraction audit tables",
-                "- `plots/extraction_lines/`: one line-fit PDF per cube, with one page per extracted frame",
+                "- `plots/extraction_lines/`: line-fit PDFs, per cube in serial mode or per frame in parallel mode",
                 "- `calibration_manifest.csv`: cube calibration metadata and digests",
                 "- `policy_summary.csv`: per-frame extraction policy counts",
                 "",
@@ -1154,7 +1268,9 @@ def extract_dataset(args: argparse.Namespace) -> None:
             ("readme", readme_path),
         ],
     )
-    print(f"extracted frames: {processed}")
+    print(f"extracted frames: {len(extraction_rows)}")
+    if interrupted:
+        raise SystemExit(130)
 
 
 def main() -> None:
@@ -1183,7 +1299,13 @@ def main() -> None:
     parser.add_argument("--progress-every", type=int, default=5, help="Print progress every N cubes/frames.")
     parser.add_argument("--no-progress", action="store_true", help="Disable progress bars and use periodic log lines.")
     parser.add_argument("--qc-every", type=int, default=0, help="Write extraction plots every N frames; 0 disables.")
-    parser.add_argument("--line-fit-qc", action="store_true", help="Also write per-frame line-fit PDFs when --qc-every selects a frame.")
+    parser.add_argument("--line-fit-qc", action="store_true", help="Write line-fit PDFs for extracted frames.")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="extract: parallel frame workers. Use 0 for CPU count minus one.",
+    )
     args = parser.parse_args()
     provided = _provided_destinations(parser, sys.argv[1:])
     if args.plan:
