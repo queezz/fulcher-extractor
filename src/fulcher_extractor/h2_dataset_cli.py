@@ -1212,7 +1212,7 @@ def _coerce_line_fit_value(value: object, field) -> object:
     return float(value)
 
 
-def _plot_frame_task(task: dict) -> dict:
+def _plot_one_frame(task: dict, *, line_fit_pdf: PdfPages | None = None) -> tuple[dict, str]:
     cube_path = Path(task["cube_path"])
     shot = str(task["shot"])
     frame = int(task["frame"])
@@ -1238,8 +1238,11 @@ def _plot_frame_task(task: dict) -> dict:
                 raise FileNotFoundError(f"fit report not found: {fit_report_path}")
             results = _line_fit_results_from_csv(fit_report_path)
             fig = plot_line_fit_page(spectrum, results, columns=int(task["line_fit_columns"]))
-            with PdfPages(Path(task["qc_line_dir"]) / f"{stem}_line_fits.pdf") as pdf:
-                pdf.savefig(fig)
+            if line_fit_pdf is None:
+                with PdfPages(Path(task["line_fit_pdf_path"])) as pdf:
+                    pdf.savefig(fig)
+            else:
+                line_fit_pdf.savefig(fig)
             plt.close(fig)
             row["n_lines"] = len(results)
         label = f"{stem} plotted"
@@ -1248,7 +1251,49 @@ def _plot_frame_task(task: dict) -> dict:
         row["error"] = repr(exc)
         row["traceback"] = traceback.format_exc()
         label = f"{stem} failed"
+    return row, label
+
+
+def _plot_frame_task(task: dict) -> dict:
+    row, label = _plot_one_frame(task)
     return {"ordinal": int(task["ordinal"]), "row": row, "progress_label": label}
+
+
+def _plot_shot_task(group: dict) -> dict:
+    tasks = sorted(group["tasks"], key=lambda item: (int(item["frame"]), int(item["ordinal"])))
+    shot = str(group["shot"])
+    results = []
+    line_fit_pdf = None
+    try:
+        if any(task["line_fit_qc"] for task in tasks):
+            line_fit_pdf = PdfPages(Path(group["qc_line_dir"]) / f"{shot}_line_fits.pdf")
+        for task in tasks:
+            row, label = _plot_one_frame(task, line_fit_pdf=line_fit_pdf)
+            results.append({"ordinal": int(task["ordinal"]), "row": row, "progress_label": label})
+    finally:
+        if line_fit_pdf is not None:
+            line_fit_pdf.close()
+    failed = sum(1 for result in results if result["row"].get("status") == "failed")
+    label = f"{shot} {len(results)} frames" + (f", {failed} failed" if failed else "")
+    return {"ordinal": int(group["ordinal"]), "results": results, "progress_label": label}
+
+
+def _plot_shot_groups(tasks: list[dict], *, qc_line_dir: Path) -> list[dict]:
+    by_shot: dict[str, list[dict]] = {}
+    first_ordinal: dict[str, int] = {}
+    for task in tasks:
+        shot = str(task["shot"])
+        by_shot.setdefault(shot, []).append(task)
+        first_ordinal.setdefault(shot, int(task["ordinal"]))
+    return [
+        {
+            "ordinal": first_ordinal[shot],
+            "shot": shot,
+            "tasks": shot_tasks,
+            "qc_line_dir": str(qc_line_dir),
+        }
+        for shot, shot_tasks in sorted(by_shot.items(), key=lambda item: first_ordinal[item[0]])
+    ]
 
 
 def _plot_summary_rows(output_dir: Path) -> list[dict]:
@@ -1270,6 +1315,14 @@ def _plot_filter_matches(row: dict, plot_filter: str) -> bool:
     return True
 
 
+def _plot_region_enabled(args: argparse.Namespace) -> bool:
+    return args.plot_kind in {"all", "region"}
+
+
+def _plot_line_fit_enabled(args: argparse.Namespace) -> bool:
+    return bool(args.line_fit_qc and args.plot_kind in {"all", "line-fit"})
+
+
 def plot_dataset(args: argparse.Namespace) -> None:
     output_dir = args.output_dir
     fit_report_dir = output_dir / "fit_reports"
@@ -1280,6 +1333,8 @@ def plot_dataset(args: argparse.Namespace) -> None:
 
     summary_rows = _plot_summary_rows(output_dir)
     tasks: list[dict] = []
+    region_enabled = _plot_region_enabled(args)
+    line_fit_enabled = _plot_line_fit_enabled(args)
     for row in summary_rows:
         if not _plot_filter_matches(row, args.plot_filter):
             continue
@@ -1299,16 +1354,19 @@ def plot_dataset(args: argparse.Namespace) -> None:
                 "fit_report_path": str(fit_report_dir / f"{stem}_fit_report.csv"),
                 "qc_region_dir": str(qc_region_dir),
                 "qc_line_dir": str(qc_line_dir),
-                "region_qc": bool(args.qc_every and ordinal % args.qc_every == 0),
-                "line_fit_qc": bool(args.line_fit_qc),
+                "line_fit_pdf_path": str(qc_line_dir / f"{stem}_line_fits.pdf"),
+                "region_qc": bool(region_enabled and args.qc_every and ordinal % args.qc_every == 0),
+                "line_fit_qc": bool(line_fit_enabled),
                 "line_fit_columns": args.line_fit_columns,
             }
         )
 
     workers = _worker_count(args.workers)
+    use_shot_pdfs = bool(line_fit_enabled and args.line_fit_pdf_mode == "shot")
+    work_items = _plot_shot_groups(tasks, qc_line_dir=qc_line_dir) if use_shot_pdfs else tasks
     update_progress, close_progress = _progress_updater(
-        total=len(tasks),
-        desc="plot frames",
+        total=len(work_items),
+        desc="plot shots" if use_shot_pdfs else "plot frames",
         every=args.progress_every,
         enabled=not args.no_progress,
         suffix=f"({workers} workers)" if workers > 1 else "",
@@ -1318,26 +1376,34 @@ def plot_dataset(args: argparse.Namespace) -> None:
     interrupted = False
     try:
         if workers == 1:
-            for task in tasks:
-                result = _plot_frame_task(task)
-                results.append(result)
-                update_progress(result["ordinal"], result["progress_label"])
+            for item in work_items:
+                if use_shot_pdfs:
+                    group_result = _plot_shot_task(item)
+                    results.extend(group_result["results"])
+                    update_progress(group_result["ordinal"], group_result["progress_label"])
+                else:
+                    result = _plot_frame_task(item)
+                    results.append(result)
+                    update_progress(result["ordinal"], result["progress_label"])
         else:
             executor = concurrent.futures.ProcessPoolExecutor(max_workers=workers)
             try:
-                future_to_task = {executor.submit(_plot_frame_task, task): task for task in tasks}
+                worker = _plot_shot_task if use_shot_pdfs else _plot_frame_task
+                future_to_task = {executor.submit(worker, item): item for item in work_items}
                 completed = 0
                 for future in concurrent.futures.as_completed(future_to_task):
                     result = future.result()
                     completed += 1
-                    results.append(result)
-                    if result["row"].get("status") == "failed":
-                        print(
-                            f"failed plot {result['row']['shot']}_fr_{result['row']['frame']}: "
-                            f"{result['row'].get('error', '')}",
-                            file=sys.stderr,
-                            flush=True,
-                        )
+                    item_results = result["results"] if use_shot_pdfs else [result]
+                    results.extend(item_results)
+                    for item_result in item_results:
+                        if item_result["row"].get("status") == "failed":
+                            print(
+                                f"failed plot {item_result['row']['shot']}_fr_{item_result['row']['frame']}: "
+                                f"{item_result['row'].get('error', '')}",
+                                file=sys.stderr,
+                                flush=True,
+                            )
                     update_progress(completed, result["progress_label"])
             except KeyboardInterrupt:
                 interrupted = True
@@ -1629,12 +1695,24 @@ def main() -> None:
     parser.add_argument("--qc-every", type=int, default=0, help="Write region QC plots every N frames; 0 disables.")
     parser.add_argument("--line-fit-qc", action="store_true", help="Write line-fit PDFs for extracted frames.")
     parser.add_argument("--line-fit-columns", type=int, default=5, help="plot: columns per line-fit PDF page.")
+    parser.add_argument(
+        "--line-fit-pdf-mode",
+        choices=["shot", "frame"],
+        default="shot",
+        help="plot: write one line-fit PDF per shot or one PDF per frame.",
+    )
     parser.add_argument("--resume", action="store_true", help="extract: skip completed checkpointed frames with valid outputs.")
     parser.add_argument(
         "--plot-filter",
         choices=["ok", "failed", "all"],
         default="ok",
         help="plot: which extraction_summary.csv rows to render.",
+    )
+    parser.add_argument(
+        "--plot-kind",
+        choices=["all", "region", "line-fit"],
+        default="all",
+        help="plot: render all QC, extraction-region PNGs only, or line-fit PDFs only.",
     )
     parser.add_argument(
         "--workers",

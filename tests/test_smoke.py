@@ -899,6 +899,11 @@ def test_qc_region_plot_renders_with_band_rails(tmp_path):
     assert output.exists()
     assert output.stat().st_size > 0
     assert fig.axes[0].lines
+    assert fig.axes[0].get_xlim() == (600.0, 630.0)
+    assert fig.axes[0].get_ylim()[0] < 0.0
+    assert min(fig.axes[0].get_yticks()) == 0.0
+    ytick_labels = [label.get_text() for label in fig.axes[0].get_yticklabels() if label.get_text()]
+    assert all(label.count(".") == 1 and len(label.rsplit(".", maxsplit=1)[1]) == 2 for label in ytick_labels)
     labels = {text.get_text() for text in fig.axes[0].texts}
     assert {"Q4", "Q9", "Q3"}.issubset(labels)
     assert "Q1" not in labels
@@ -940,6 +945,43 @@ def test_qc_region_plot_can_label_all_lines_for_identification(tmp_path):
     assert labels.count("Q1") >= 2
     assert "Q11" in labels
     plt.close(fig)
+
+
+def test_qc_region_plot_layout_is_stable_across_y_scales(tmp_path):
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    from fulcher_extractor.line_database import load_lines
+    from fulcher_extractor.qc import plot_region
+    from fulcher_extractor.spectrocube_io import Spectrum
+
+    wavelength = np.linspace(600.0, 630.0, 1201)
+    lines = load_lines()
+    positions = []
+    for frame, intensity in enumerate(
+        [
+            0.001 * np.sin(wavelength),
+            0.02 + 0.05 * np.sin(wavelength) + 0.01 * (wavelength > 615.0),
+        ]
+    ):
+        spectrum = Spectrum(
+            source_path=__file__,
+            shot_id="synthetic",
+            selectors={"frame": frame},
+            wavelength_nm=wavelength,
+            intensity=intensity,
+            intensity_units="a.u.",
+            wavelength_medium="air",
+            metadata={},
+        )
+        fig = plot_region(spectrum, lines=lines, output_path=tmp_path / f"region_{frame}.png")
+        positions.append(tuple(round(value, 6) for value in fig.axes[0].get_position().bounds))
+        assert fig.axes[0].get_xlim() == (600.0, 630.0)
+        assert min(fig.axes[0].get_yticks()) == 0.0
+        assert not any(label.get_text().startswith("-") for label in fig.axes[0].get_yticklabels())
+        plt.close(fig)
+
+    assert positions[0] == positions[1]
 
 
 def test_qc_line_fit_plot_renders_isolated_and_blend(tmp_path):
@@ -1374,6 +1416,7 @@ def test_plot_plan_inherits_extract_section(tmp_path):
                 'manifest = "scan/selected_frames.csv"',
                 "qc_every = 1",
                 "line_fit_qc = true",
+                'plot_kind = "region"',
                 "workers = 4",
             ]
         ),
@@ -1386,6 +1429,7 @@ def test_plot_plan_inherits_extract_section(tmp_path):
         manifest=None,
         qc_every=0,
         line_fit_qc=False,
+        plot_kind="all",
         workers=1,
     )
 
@@ -1396,7 +1440,37 @@ def test_plot_plan_inherits_extract_section(tmp_path):
     assert args.manifest == tmp_path / "scan" / "selected_frames.csv"
     assert args.qc_every == 1
     assert args.line_fit_qc is True
+    assert args.plot_kind == "region"
     assert args.workers == 4
+
+
+def test_plot_kind_region_disables_line_fit_qc():
+    import argparse
+
+    from fulcher_extractor.h2_dataset_cli import _plot_line_fit_enabled, _plot_region_enabled
+
+    args = argparse.Namespace(plot_kind="region", line_fit_qc=True)
+
+    assert _plot_region_enabled(args) is True
+    assert _plot_line_fit_enabled(args) is False
+
+
+def test_plot_shot_groups_preserve_first_seen_shot_order():
+    from pathlib import Path
+
+    from fulcher_extractor.h2_dataset_cli import _plot_shot_groups
+
+    tasks = [
+        {"ordinal": 1, "shot": "193790", "frame": 4},
+        {"ordinal": 2, "shot": "193791", "frame": 1},
+        {"ordinal": 3, "shot": "193790", "frame": 2},
+    ]
+
+    groups = _plot_shot_groups(tasks, qc_line_dir=Path("plots"))
+
+    assert [group["shot"] for group in groups] == ["193790", "193791"]
+    assert [task["frame"] for task in groups[0]["tasks"]] == [4, 2]
+    assert groups[0]["qc_line_dir"] == "plots"
 
 
 def test_extraction_progress_resume_requires_complete_artifacts(tmp_path):

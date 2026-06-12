@@ -44,7 +44,8 @@ fulcher-analyze-batch --plan h2_dataset_plan.toml
 
 The plan should include an `[analyze]` section for downstream analyzer paths.
 The optional `plot` step regenerates QC plots from existing extraction fit
-reports without refitting spectra.
+reports without refitting spectra. By default, line-fit QC is written as one
+multi-page PDF per shot.
 
 Extraction writes `extraction_progress.jsonl` as frames complete. Use
 `fulcher-h2-dataset --plan h2_dataset_plan.toml extract --resume` to skip

@@ -7,6 +7,7 @@ import math
 
 from matplotlib.backends.backend_pdf import PdfPages
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 
 from .fit import LineFitResult
@@ -50,6 +51,8 @@ def plot_region(
     with fulcher_qc_style():
         fig, ax = plt.subplots(figsize=(11, 4.4))
         ax.plot(window.wavelength_nm, window.intensity, lw=0.75, color="black")
+        ax.set_xlim(wavelength_min_nm, wavelength_max_nm)
+        _apply_region_y_axis(ax, window.intensity)
         ax.set_xlabel("Wavelength [nm]")
         ax.set_ylabel(f"Intensity [{spectrum.intensity_units}]")
         set_inward_ticks(ax)
@@ -79,14 +82,51 @@ def plot_region(
                 show_all_line_labels=show_all_line_labels,
                 labels_above_axes=labels_above_axes,
             )
-        fig.tight_layout()
-        if labels_above_axes and lines:
-            fig.subplots_adjust(top=0.66)
+        _apply_region_layout(fig, labels_above_axes=labels_above_axes and bool(lines))
     if output_path is not None:
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(output, dpi=180)
     return fig
+
+
+def _apply_region_layout(fig, *, labels_above_axes: bool) -> None:
+    """Use fixed region-QC margins so blink-review frames do not shift."""
+    fig.subplots_adjust(
+        left=0.085,
+        right=0.985,
+        bottom=0.14,
+        top=0.66 if labels_above_axes else 0.90,
+    )
+
+
+def _apply_region_y_axis(ax, intensity: np.ndarray) -> None:
+    finite = np.asarray(intensity, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    max_intensity = max(float(finite.max()) if finite.size else 0.0, 0.0)
+    top_tick = _region_y_top_tick(max_intensity)
+    step = _region_y_tick_step(top_tick)
+    ticks = np.arange(0.0, top_tick + 0.5 * step, step)
+    ax.set_ylim(-0.04 * top_tick, top_tick)
+    ax.set_yticks(ticks)
+    ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
+
+
+def _region_y_top_tick(max_intensity: float) -> float:
+    if max_intensity <= 0:
+        return 0.01
+    raw_top = max_intensity * 1.08
+    step = _region_y_tick_step(raw_top)
+    return max(step, math.ceil(raw_top / step) * step)
+
+
+def _region_y_tick_step(top_tick: float) -> float:
+    target = max(top_tick / 6.0, 0.01)
+    for step in (0.01, 0.02, 0.05, 0.10, 0.20, 0.50, 1.00):
+        if target <= step:
+            return step
+    magnitude = 10 ** math.floor(math.log10(target))
+    return math.ceil(target / magnitude) * magnitude
 
 
 def plot_line_fit(
