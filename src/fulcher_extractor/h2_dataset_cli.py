@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import csv
+import json
 import math
 import os
 import sys
@@ -1064,12 +1065,100 @@ def _worker_count(value: int | None) -> int:
     return value
 
 
+def _extract_progress_suffix(*, workers: int, skipped: int) -> str:
+    parts = []
+    if workers > 1:
+        parts.append(f"{workers} workers")
+    if skipped:
+        parts.append(f"{skipped} skipped")
+    return f"({', '.join(parts)})" if parts else ""
+
+
 def _stop_executor(executor: concurrent.futures.ProcessPoolExecutor) -> None:
     terminate_workers = getattr(executor, "terminate_workers", None)
     if terminate_workers is not None:
         terminate_workers()
         return
     executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _frame_key(row: dict) -> str:
+    return f"{row['cube']}|{int(row['frame'])}"
+
+
+def _frame_stem(row: dict) -> str:
+    return f"{row['shot']}_fr_{int(row['frame'])}"
+
+
+def _frame_artifacts_complete(row: dict, output_dir: Path) -> bool:
+    stem = _frame_stem(row)
+    paths = [
+        output_dir / "intensities" / f"{stem}.csv",
+        output_dir / "intensities" / f"{stem}_err.csv",
+        output_dir / "fit_reports" / f"{stem}_fit_report.csv",
+    ]
+    return all(path.is_file() and path.stat().st_size > 0 for path in paths)
+
+
+def _load_extraction_progress(path: Path, output_dir: Path) -> dict[str, dict]:
+    if not path.is_file():
+        return {}
+    latest: dict[str, dict] = {}
+    with path.open("r", encoding="utf-8") as fh:
+        for line_number, line in enumerate(fh, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                print(
+                    f"warning: ignoring malformed checkpoint line {line_number} in {path}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+            row = payload.get("row", {})
+            if not row:
+                continue
+            latest[_frame_key(row)] = payload
+    return {
+        key: payload
+        for key, payload in latest.items()
+        if payload.get("row", {}).get("status") == "ok"
+        and _frame_artifacts_complete(payload["row"], output_dir)
+    }
+
+
+def _append_extraction_progress(path: Path, result: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "row": result["row"],
+        "policy_rows": result.get("policy_rows", []),
+    }
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, sort_keys=True) + "\n")
+        fh.flush()
+
+
+def _merge_extraction_results(
+    *,
+    skipped: dict[str, dict],
+    results: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    merged: dict[str, dict] = dict(skipped)
+    for result in results:
+        merged[_frame_key(result["row"])] = result
+    ordered = sorted(
+        merged.values(),
+        key=lambda item: (str(item["row"].get("cube", "")), int(item["row"].get("frame", 0))),
+    )
+    extraction_rows = [item["row"] for item in ordered]
+    policy_rows = [
+        policy_row
+        for item in ordered
+        for policy_row in item.get("policy_rows", [])
+    ]
+    return extraction_rows, policy_rows
 
 
 def _line_fit_results_from_csv(path: Path) -> list[LineFitResult]:
@@ -1294,6 +1383,10 @@ def extract_dataset(args: argparse.Namespace) -> None:
     qc_line_dir = output_dir / "plots" / "extraction_lines"
     for path in (intensity_dir, fit_report_dir, qc_region_dir, qc_line_dir):
         path.mkdir(parents=True, exist_ok=True)
+    progress_path = output_dir / "extraction_progress.jsonl"
+    skipped_results = _load_extraction_progress(progress_path, output_dir) if args.resume else {}
+    if not args.resume:
+        progress_path.write_text("", encoding="utf-8")
 
     manifest_frames = _load_manifest(args.manifest) if args.manifest else None
     requested_frames = _parse_frames(args.frames)
@@ -1330,6 +1423,9 @@ def extract_dataset(args: argparse.Namespace) -> None:
                 break
             ordinal = len(tasks) + 1
             stem = f"{shot}_fr_{frame}"
+            checkpoint_row = {"shot": shot, "frame": frame, "cube": str(cube_path)}
+            if _frame_key(checkpoint_row) in skipped_results:
+                continue
             tasks.append(
                 {
                     "ordinal": ordinal,
@@ -1360,7 +1456,7 @@ def extract_dataset(args: argparse.Namespace) -> None:
         desc="extract frames",
         every=args.progress_every,
         enabled=not args.no_progress,
-        suffix=f"({workers} workers)" if workers > 1 else "",
+        suffix=_extract_progress_suffix(workers=workers, skipped=len(skipped_results)),
     )
     if args.line_fit_qc and workers > 1:
         for task in tasks:
@@ -1382,6 +1478,7 @@ def extract_dataset(args: argparse.Namespace) -> None:
                         task["line_fit_pdf"] = open_pdfs[pdf_key]
                     result = _extract_frame_task(task)
                     results.append(result)
+                    _append_extraction_progress(progress_path, result)
                     if args.no_progress and (
                         result["ordinal"] == 1 or result["ordinal"] % args.progress_every == 0
                     ):
@@ -1404,6 +1501,7 @@ def extract_dataset(args: argparse.Namespace) -> None:
                     result = future.result()
                     completed += 1
                     results.append(result)
+                    _append_extraction_progress(progress_path, result)
                     if result["row"].get("status") == "failed":
                         print(
                             f"failed {result['row']['shot']}_fr_{result['row']['frame']}: "
@@ -1438,9 +1536,10 @@ def extract_dataset(args: argparse.Namespace) -> None:
             file=sys.stderr,
             flush=True,
         )
-    for result in sorted(results, key=lambda item: item["ordinal"]):
-        extraction_rows.append(result["row"])
-        policy_rows.extend(result["policy_rows"])
+    extraction_rows, policy_rows = _merge_extraction_results(
+        skipped=skipped_results,
+        results=results,
+    )
 
     extraction_summary_path = output_dir / "extraction_summary.csv"
     policy_summary_path = output_dir / "policy_summary.csv"
@@ -1459,6 +1558,8 @@ def extract_dataset(args: argparse.Namespace) -> None:
                 f"Manifest: `{args.manifest or ''}`",
                 f"Frames: `{args.frames}`",
                 f"Workers: `{workers}`",
+                f"Resume: `{bool(args.resume)}`",
+                f"Skipped frames: `{len(skipped_results)}`",
                 f"Extracted frames: `{len(extraction_rows)}`",
                 "",
                 "Primary outputs:",
@@ -1466,6 +1567,7 @@ def extract_dataset(args: argparse.Namespace) -> None:
                 "- `intensities/`: fulcheranalyzer-compatible intensity/error matrices",
                 "- `fit_reports/`: long-form extraction audit tables",
                 "- `plots/extraction_lines/`: line-fit PDFs, per cube in serial mode or per frame in parallel mode",
+                "- `extraction_progress.jsonl`: frame-level checkpoint used by `--resume`",
                 "- `calibration_manifest.csv`: cube calibration metadata and digests",
                 "- `policy_summary.csv`: per-frame extraction policy counts",
                 "",
@@ -1488,6 +1590,7 @@ def extract_dataset(args: argparse.Namespace) -> None:
             ("region plots", qc_region_dir),
             ("line PDFs", qc_line_dir),
             ("summary", extraction_summary_path),
+            ("progress", progress_path),
             ("policy", policy_summary_path),
             ("calibration", calibration_manifest_path),
             ("readme", readme_path),
@@ -1526,6 +1629,7 @@ def main() -> None:
     parser.add_argument("--qc-every", type=int, default=0, help="Write region QC plots every N frames; 0 disables.")
     parser.add_argument("--line-fit-qc", action="store_true", help="Write line-fit PDFs for extracted frames.")
     parser.add_argument("--line-fit-columns", type=int, default=5, help="plot: columns per line-fit PDF page.")
+    parser.add_argument("--resume", action="store_true", help="extract: skip completed checkpointed frames with valid outputs.")
     parser.add_argument(
         "--plot-filter",
         choices=["ok", "failed", "all"],

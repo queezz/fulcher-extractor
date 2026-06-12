@@ -46,6 +46,11 @@ The plan should include an `[analyze]` section for downstream analyzer paths.
 The optional `plot` step regenerates QC plots from existing extraction fit
 reports without refitting spectra.
 
+Extraction writes `extraction_progress.jsonl` as frames complete. Use
+`fulcher-h2-dataset --plan h2_dataset_plan.toml extract --resume` to skip
+checkpointed frames whose intensity, error, and fit-report artifacts are
+already present.
+
 ## Development
 
 Use the Fulcher virtual environment explicitly. Future agents should run tests

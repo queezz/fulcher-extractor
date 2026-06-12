@@ -1397,3 +1397,50 @@ def test_plot_plan_inherits_extract_section(tmp_path):
     assert args.qc_every == 1
     assert args.line_fit_qc is True
     assert args.workers == 4
+
+
+def test_extraction_progress_resume_requires_complete_artifacts(tmp_path):
+    from fulcher_extractor.h2_dataset_cli import (
+        _append_extraction_progress,
+        _frame_key,
+        _load_extraction_progress,
+    )
+
+    output_dir = tmp_path / "dataset"
+    result = {
+        "row": {
+            "shot": "193790",
+            "frame": 15,
+            "cube": "C:/data/193790_spectrocube.nc",
+            "status": "ok",
+            "n_lines": 29,
+        },
+        "policy_rows": [
+            {
+                "shot": "193790",
+                "frame": 15,
+                "legacy_policy": "accepted",
+                "legacy_matrix_action": "keep",
+                "n_lines": 29,
+            }
+        ],
+    }
+    progress_path = output_dir / "extraction_progress.jsonl"
+
+    _append_extraction_progress(progress_path, result)
+
+    assert _load_extraction_progress(progress_path, output_dir) == {}
+
+    for relative in [
+        "intensities/193790_fr_15.csv",
+        "intensities/193790_fr_15_err.csv",
+        "fit_reports/193790_fr_15_fit_report.csv",
+    ]:
+        path = output_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("ok\n", encoding="utf-8")
+
+    loaded = _load_extraction_progress(progress_path, output_dir)
+
+    assert list(loaded) == [_frame_key(result["row"])]
+    assert loaded[_frame_key(result["row"])]["row"]["n_lines"] == 29
