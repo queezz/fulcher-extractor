@@ -11,6 +11,7 @@ import sys
 import time
 import traceback
 from collections import defaultdict
+from dataclasses import MISSING, fields
 from pathlib import Path
 
 from matplotlib.backends.backend_pdf import PdfPages
@@ -31,7 +32,7 @@ import pandas as pd
 import xarray as xr
 
 from fulcher_extractor.extract import extract_lines
-from fulcher_extractor.fit import FitConfig
+from fulcher_extractor.fit import FitConfig, LineFitResult
 from fulcher_extractor.line_database import load_lines
 from fulcher_extractor.line_policy import load_line_policy_set, overview_qc_lines
 from fulcher_extractor.output import results_to_dataframe, write_fulcheranalyzer_csvs
@@ -137,7 +138,8 @@ def _apply_plan(args: argparse.Namespace, plan_path: Path, provided: set[str]) -
         raw = tomllib.load(fh)
 
     sections = []
-    for section_name in ("common", args.command):
+    command_sections = ("extract", "plot") if args.command == "plot" else (args.command,)
+    for section_name in ("common", *command_sections):
         section = raw.get(section_name, {})
         if section:
             if not isinstance(section, dict):
@@ -1070,6 +1072,220 @@ def _stop_executor(executor: concurrent.futures.ProcessPoolExecutor) -> None:
     executor.shutdown(wait=False, cancel_futures=True)
 
 
+def _line_fit_results_from_csv(path: Path) -> list[LineFitResult]:
+    table = pd.read_csv(path)
+    result_fields = fields(LineFitResult)
+    return [
+        LineFitResult(
+            **{
+                field.name: _coerce_line_fit_value(row.get(field.name), field)
+                for field in result_fields
+                if field.name in row or field.default is not MISSING
+            }
+        )
+        for _, row in table.iterrows()
+    ]
+
+
+def _coerce_line_fit_value(value: object, field) -> object:
+    if value is None or pd.isna(value):
+        if field.default is not MISSING:
+            return field.default
+        value = ""
+    if field.name in {"N", "n_points", "blend_component_count", "contaminant_component_count"}:
+        return int(float(value))
+    if field.name == "success":
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "ok"}
+        return bool(value)
+    if field.name in {
+        "line_id",
+        "isotopologue",
+        "branch",
+        "band",
+        "baseline_strategy",
+        "status",
+        "blend_group_id",
+        "close_neighbor_ids",
+        "legacy_policy",
+        "legacy_matrix_action",
+        "legacy_evidence",
+        "legacy_fit_hint",
+        "legacy_line_scale_role",
+        "boltzmann_fit_action",
+        "boltzmann_fit_reason",
+        "contaminant_labels",
+        "contaminant_amplitudes",
+        "contaminant_centers_nm",
+        "contaminant_sigmas_nm",
+    }:
+        return str(value)
+    return float(value)
+
+
+def _plot_frame_task(task: dict) -> dict:
+    cube_path = Path(task["cube_path"])
+    shot = str(task["shot"])
+    frame = int(task["frame"])
+    stem = f"{shot}_fr_{frame}"
+    row = {"shot": shot, "frame": frame, "cube": str(cube_path), "status": "ok"}
+    try:
+        spectrum = load_spectrum(cube_path, frame=frame, engine=task["engine"])
+        if task["region_qc"]:
+            lines = load_lines()
+            policy_set = load_line_policy_set()
+            label_lines = overview_qc_lines(lines, policy_set=policy_set)
+            fig = plot_region(
+                spectrum,
+                lines=lines,
+                label_lines=label_lines,
+                guide_lines=label_lines,
+                output_path=Path(task["qc_region_dir"]) / f"{stem}_600_630.png",
+            )
+            plt.close(fig)
+        if task["line_fit_qc"]:
+            fit_report_path = Path(task["fit_report_path"])
+            if not fit_report_path.is_file():
+                raise FileNotFoundError(f"fit report not found: {fit_report_path}")
+            results = _line_fit_results_from_csv(fit_report_path)
+            fig = plot_line_fit_page(spectrum, results, columns=int(task["line_fit_columns"]))
+            with PdfPages(Path(task["qc_line_dir"]) / f"{stem}_line_fits.pdf") as pdf:
+                pdf.savefig(fig)
+            plt.close(fig)
+            row["n_lines"] = len(results)
+        label = f"{stem} plotted"
+    except Exception as exc:
+        row["status"] = "failed"
+        row["error"] = repr(exc)
+        row["traceback"] = traceback.format_exc()
+        label = f"{stem} failed"
+    return {"ordinal": int(task["ordinal"]), "row": row, "progress_label": label}
+
+
+def _plot_summary_rows(output_dir: Path) -> list[dict]:
+    summary_path = output_dir / "extraction_summary.csv"
+    if not summary_path.is_file():
+        raise SystemExit(f"Extraction summary not found: {summary_path}")
+    with summary_path.open("r", newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+
+def _plot_filter_matches(row: dict, plot_filter: str) -> bool:
+    status = str(row.get("status", ""))
+    if plot_filter == "all":
+        return True
+    if plot_filter == "ok":
+        return status == "ok"
+    if plot_filter == "failed":
+        return status == "failed"
+    return True
+
+
+def plot_dataset(args: argparse.Namespace) -> None:
+    output_dir = args.output_dir
+    fit_report_dir = output_dir / "fit_reports"
+    qc_region_dir = output_dir / "plots" / "extraction_region"
+    qc_line_dir = output_dir / "plots" / "extraction_lines"
+    for path in (qc_region_dir, qc_line_dir):
+        path.mkdir(parents=True, exist_ok=True)
+
+    summary_rows = _plot_summary_rows(output_dir)
+    tasks: list[dict] = []
+    for row in summary_rows:
+        if not _plot_filter_matches(row, args.plot_filter):
+            continue
+        if args.max_frames is not None and len(tasks) >= args.max_frames:
+            break
+        ordinal = len(tasks) + 1
+        shot = str(row["shot"])
+        frame = int(row["frame"])
+        stem = f"{shot}_fr_{frame}"
+        tasks.append(
+            {
+                "ordinal": ordinal,
+                "cube_path": row["cube"],
+                "shot": shot,
+                "frame": frame,
+                "engine": args.engine,
+                "fit_report_path": str(fit_report_dir / f"{stem}_fit_report.csv"),
+                "qc_region_dir": str(qc_region_dir),
+                "qc_line_dir": str(qc_line_dir),
+                "region_qc": bool(args.qc_every and ordinal % args.qc_every == 0),
+                "line_fit_qc": bool(args.line_fit_qc),
+                "line_fit_columns": args.line_fit_columns,
+            }
+        )
+
+    workers = _worker_count(args.workers)
+    update_progress, close_progress = _progress_updater(
+        total=len(tasks),
+        desc="plot frames",
+        every=args.progress_every,
+        enabled=not args.no_progress,
+        suffix=f"({workers} workers)" if workers > 1 else "",
+    )
+
+    results: list[dict] = []
+    interrupted = False
+    try:
+        if workers == 1:
+            for task in tasks:
+                result = _plot_frame_task(task)
+                results.append(result)
+                update_progress(result["ordinal"], result["progress_label"])
+        else:
+            executor = concurrent.futures.ProcessPoolExecutor(max_workers=workers)
+            try:
+                future_to_task = {executor.submit(_plot_frame_task, task): task for task in tasks}
+                completed = 0
+                for future in concurrent.futures.as_completed(future_to_task):
+                    result = future.result()
+                    completed += 1
+                    results.append(result)
+                    if result["row"].get("status") == "failed":
+                        print(
+                            f"failed plot {result['row']['shot']}_fr_{result['row']['frame']}: "
+                            f"{result['row'].get('error', '')}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    update_progress(completed, result["progress_label"])
+            except KeyboardInterrupt:
+                interrupted = True
+                for future in future_to_task:
+                    future.cancel()
+                _stop_executor(executor)
+            else:
+                executor.shutdown()
+    except KeyboardInterrupt:
+        interrupted = True
+    finally:
+        close_progress()
+    if interrupted:
+        print(
+            "Plotting interrupted by Ctrl+C; writing plot summary for completed frames only.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    plot_rows = [result["row"] for result in sorted(results, key=lambda item: item["ordinal"])]
+    plot_summary_path = output_dir / "plot_summary.csv"
+    _write_csv(plot_summary_path, plot_rows)
+
+    _print_artifact_summary(
+        title="H2 Fulcher QC plotting",
+        output_dir=output_dir,
+        artifacts=[
+            ("region plots", qc_region_dir),
+            ("line PDFs", qc_line_dir),
+            ("summary", plot_summary_path),
+        ],
+    )
+    print(f"plotted frames: {len(plot_rows)}")
+    if interrupted:
+        raise SystemExit(130)
+
+
 def extract_dataset(args: argparse.Namespace) -> None:
     output_dir = args.output_dir
     intensity_dir = output_dir / "intensities"
@@ -1284,13 +1500,13 @@ def extract_dataset(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--plan", type=Path, default=None, help="TOML run plan with [common], [scan], and [extract] sections.")
+    parser.add_argument("--plan", type=Path, default=None, help="TOML run plan with [common], [scan], [extract], and [plot] sections.")
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["scan", "extract"],
+        choices=["scan", "extract", "plot"],
         default="extract",
-        help="scan ranks candidate frames; extract writes intensity tables.",
+        help="scan ranks candidate frames; extract writes intensity tables; plot regenerates QC from fit reports.",
     )
     parser.add_argument("--cube-glob", default=DEFAULT_CUBE_GLOB)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
@@ -1307,13 +1523,20 @@ def main() -> None:
     parser.add_argument("--fulcher-max-nm", type=float, default=DEFAULT_FULCHER_MAX_NM)
     parser.add_argument("--progress-every", type=int, default=5, help="Print progress every N cubes/frames.")
     parser.add_argument("--no-progress", action="store_true", help="Disable progress bars and use periodic log lines.")
-    parser.add_argument("--qc-every", type=int, default=0, help="Write extraction plots every N frames; 0 disables.")
+    parser.add_argument("--qc-every", type=int, default=0, help="Write region QC plots every N frames; 0 disables.")
     parser.add_argument("--line-fit-qc", action="store_true", help="Write line-fit PDFs for extracted frames.")
+    parser.add_argument("--line-fit-columns", type=int, default=5, help="plot: columns per line-fit PDF page.")
+    parser.add_argument(
+        "--plot-filter",
+        choices=["ok", "failed", "all"],
+        default="ok",
+        help="plot: which extraction_summary.csv rows to render.",
+    )
     parser.add_argument(
         "--workers",
         type=int,
         default=1,
-        help="extract: parallel frame workers. Use 0 for CPU count minus one.",
+        help="extract/plot: parallel frame workers. Use 0 for CPU count minus one.",
     )
     args = parser.parse_args()
     provided = _provided_destinations(parser, sys.argv[1:])
@@ -1325,6 +1548,9 @@ def main() -> None:
         return
     if args.command == "extract":
         extract_dataset(args)
+        return
+    if args.command == "plot":
+        plot_dataset(args)
         return
 
 

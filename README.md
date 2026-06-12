@@ -38,10 +38,13 @@ steps:
 
 ```bash
 fulcher-h2-dataset --plan h2_dataset_plan.toml extract
+fulcher-h2-dataset --plan h2_dataset_plan.toml plot
 fulcher-analyze-batch --plan h2_dataset_plan.toml
 ```
 
 The plan should include an `[analyze]` section for downstream analyzer paths.
+The optional `plot` step regenerates QC plots from existing extraction fit
+reports without refitting spectra.
 
 ## Development
 

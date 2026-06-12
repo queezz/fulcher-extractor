@@ -1312,3 +1312,88 @@ def test_qc_line_fit_pages_can_append_to_one_pdf(tmp_path):
     assert pdf_output.exists()
     assert pdf_output.stat().st_size > 0
     assert not plt.get_fignums()
+
+
+def test_h2_plot_command_reloads_fit_report_results(tmp_path):
+    import numpy as np
+
+    from fulcher_extractor.extract import extract_lines
+    from fulcher_extractor.fit import FitConfig
+    from fulcher_extractor.h2_dataset_cli import _line_fit_results_from_csv
+    from fulcher_extractor.line_database import FulcherLine
+    from fulcher_extractor.line_models import gaussian_area_model
+    from fulcher_extractor.output import results_to_dataframe
+    from fulcher_extractor.spectrocube_io import Spectrum
+
+    line = FulcherLine("H2", "Q", 0, 0, "0-0", 4, 607.4827, "synthetic", "nm")
+    wavelength = np.linspace(607.0, 608.0, 500)
+    intensity = 1.0 + gaussian_area_model(wavelength, 0.10, line.wavelength_nm, 0.0273)
+    spectrum = Spectrum(
+        source_path=__file__,
+        shot_id="synthetic",
+        selectors={"frame": 0},
+        wavelength_nm=wavelength,
+        intensity=intensity,
+        intensity_units="a.u.",
+        wavelength_medium="air",
+        metadata={},
+    )
+    results = extract_lines(
+        spectrum,
+        lines=[line],
+        wavelength_min_nm=607.0,
+        wavelength_max_nm=608.0,
+        config=FitConfig(instrument_sigma_nm=0.0273),
+    )
+    report_path = tmp_path / "fit_report.csv"
+    results_to_dataframe(results).to_csv(report_path, index=False)
+
+    reloaded = _line_fit_results_from_csv(report_path)
+
+    assert len(reloaded) == 1
+    assert reloaded[0].line_id == results[0].line_id
+    assert reloaded[0].N == results[0].N
+    assert reloaded[0].success is True
+    assert np.isclose(reloaded[0].amplitude, results[0].amplitude)
+
+
+def test_plot_plan_inherits_extract_section(tmp_path):
+    import argparse
+
+    from fulcher_extractor.h2_dataset_cli import _apply_plan
+
+    plan_path = tmp_path / "h2_dataset_plan.toml"
+    plan_path.write_text(
+        "\n".join(
+            [
+                "[common]",
+                'engine = "h5netcdf"',
+                "",
+                "[extract]",
+                'output_dir = "dataset"',
+                'manifest = "scan/selected_frames.csv"',
+                "qc_every = 1",
+                "line_fit_qc = true",
+                "workers = 4",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        command="plot",
+        engine=None,
+        output_dir=None,
+        manifest=None,
+        qc_every=0,
+        line_fit_qc=False,
+        workers=1,
+    )
+
+    _apply_plan(args, plan_path, provided=set())
+
+    assert args.engine == "h5netcdf"
+    assert args.output_dir == tmp_path / "dataset"
+    assert args.manifest == tmp_path / "scan" / "selected_frames.csv"
+    assert args.qc_every == 1
+    assert args.line_fit_qc is True
+    assert args.workers == 4
