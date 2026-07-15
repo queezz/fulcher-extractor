@@ -1,6 +1,6 @@
 # 2026 Fulcher Extractor
 
-[![DOI](https://zenodo.org/badge/1266365413.svg)](https://doi.org/10.5281/zenodo.21372039)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21372039-blue.svg)](https://doi.org/10.5281/zenodo.21372039)
 
 SpectroCube consumer for extracting Fulcher-alpha line intensities from
 calibrated spectra.
