@@ -7,6 +7,7 @@ name = "fulcher-extractor"
 version = "0.3.0"
 description = "SpectroCube Fulcher-alpha line extraction with blended Gaussian fitting and QC."
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 authors = [
   { name = "A. K.", email = "queezz@gmail.com" },
