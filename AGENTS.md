@@ -27,4 +27,7 @@ This repo is the Fulcher-alpha line extraction package.
 - Prefer explicit TOML/CSV resources for line lists and blend groups.
 - Add synthetic tests before fitting real data in bulk.
 - Do not commit local datasets or machine-specific absolute paths.
+- For fleet context, read `RULES.md` and `MAP.md` in the `repomap` repo at
+  `../2026-08-04-repo-map` (github.com/queezz/repomap) — house rules and the
+  map of the sibling repos.
 
